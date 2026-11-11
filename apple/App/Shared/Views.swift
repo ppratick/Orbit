@@ -39,7 +39,7 @@ struct RootView: View {
 #if os(macOS)
 struct MacRoot: View {
     @EnvironmentObject var store: OrbitStore
-    enum Section: String, CaseIterable, Identifiable { case chat = "Chat", approvals = "Approvals", activity = "Activity", memory = "Memory", settings = "Settings"; var id: String { rawValue } }
+    enum Section: String, CaseIterable, Identifiable { case chat = "Chat", approvals = "Approvals", activity = "Activity", memory = "Memory", settings = "Settings"; var id: Self { self } }
     @State private var section: Section? = .chat
 
     var body: some View {

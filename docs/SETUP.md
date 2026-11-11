@@ -18,12 +18,11 @@ Set secrets with `npx wrangler secret put NAME`. Each command prompts for the va
 | `ADMIN_TOKEN` | Long random string. Used once to pair your first device. |
 | `ENCRYPTION_KEY` | Output of `openssl rand -base64 32`. Encrypts stored account credentials. Back it up: if it's lost, every account must be reconnected. |
 | `PUBLIC_BASE_URL` | `https://orbit.<your-subdomain>.workers.dev`, shown after the first deploy. Set it and deploy again. |
-| `CHATGPT_OAUTH_*` | See section 2. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | See section 3. |
-| `OPENAI_API_KEY` | Optional. Only used if `OPENAI_AUTH_MODE` is `api_key` or `chatgpt_then_api_key`. |
+| `OPENAI_API_KEY` | Leave unset. The paid API fallback is disabled; it would only be used if `OPENAI_AUTH_MODE` were changed. |
 
 Deploy with `npm run deploy`. Non-secret settings live under `vars` in `wrangler.jsonc`:
-- `OPENAI_MODEL`: confirm the exact model id your client used.
+- `OPENAI_MODEL_BASIC` (`gpt-6-luna`) and `OPENAI_MODEL_ADVANCED` (`gpt-6.1-sol`). Both were confirmed in your account's model list on 2026-11-11.
 - `OPENAI_AUTH_MODE`
 - `ORBIT_TIMEZONE`
 - `ORBIT_CALENDAR_NAME`
@@ -36,30 +35,21 @@ Free-plan limits this design relies on:
 
 Since 2026-09-01, D1 rejects queries once a daily limit is hit until the 00:00 UTC reset. See STATUS.md for the expected load.
 
-## 2. Model: ChatGPT sign-in (your own OAuth client)
+## 2. Model: Sign in with ChatGPT (official dynamic registration)
 
-Orbit uses whatever OAuth client you registered and tested. Copy these values from that client's registration into secrets:
+No client registration, secret or API key is needed. Orbit uses OpenAI's dynamic client registration for ChatGPT plan usage (developers.openai.com/siwc/token-sharing-open-source).
 
-- `CHATGPT_OAUTH_CLIENT_ID`
-- `CHATGPT_OAUTH_AUTHORIZE_URL`
-- `CHATGPT_OAUTH_TOKEN_URL`
-- `CHATGPT_OAUTH_SCOPES`, space-separated, exactly as registered
-- `CHATGPT_OAUTH_REDIRECT_URI`, which must match the registration exactly. Either:
-  - `orbit://oauth/chatgpt` (custom scheme): the iPhone or Mac app captures the redirect and hands it to the Worker.
-  - `https://<worker>/oauth/chatgpt/callback`: the Worker completes sign-in itself.
-- `CHATGPT_OAUTH_EXTRA_PARAMS` (optional): JSON object of any additional authorize parameters your client needs.
-- `CHATGPT_RESPONSES_BASE_URL` (optional): only if your client calls a base URL other than `https://api.openai.com/v1`.
+In the Mac or iPhone app, go to **Settings → AI model → Continue with ChatGPT**:
+1. The app starts a listener on `127.0.0.1:1455`. It sends `client_id=dynamic_agent_client` with `agent_name_hint=Orbit` the first time, or the saved issued `oaiapp_…` ID after that, plus a per-device `ext_agent_host_id`, PKCE and a nonce.
+2. You approve in the browser: Safari on the Mac, or an in-app sheet on the iPhone. OpenAI redirects back to the app's loopback listener.
+3. The app exchanges the code and hands the credentials to the Worker. The Worker validates the ID token against OpenAI's published keys and checks the `chatgpt.tokens.use.direct` scope. From then on, only the Worker refreshes the tokens.
+4. **Verify model IDs** checks Luna and Sol against your account's model list.
 
-Then, in the app, open **Settings → AI model → Sign in with ChatGPT**.
-- The Worker generates the PKCE verifier and state, exchanges the code, stores the tokens encrypted, and refreshes them.
-- The app never receives a token.
+Plan usage is shared with your other apps under ChatGPT's five-hour limit; see ChatGPT Settings → Usage. When the limit is hit, Orbit says so and doesn't switch to the paid API. `OPENAI_AUTH_MODE` stays `chatgpt`. Signing out revokes the session but keeps the client registration, so the next sign-in is quick.
 
-`OPENAI_AUTH_MODE` controls what happens when ChatGPT access fails:
-- `chatgpt` (default): fail visibly.
-- `chatgpt_then_api_key`: retry with `OPENAI_API_KEY` on 401/403/429 or token errors, and log `llm.fallback` in Activity so it never silently costs money.
-- `api_key`: always use the API key.
+OpenAI's docs describe this flow for open-source and self-hosted apps. Whether a Worker on your own Cloudflare account counts as self-hosted is not confirmed; see STATUS.md.
 
-Whether OpenAI permits plan-allowance use from a Cloudflare-hosted, unattended caller is **not verified**. Your successful test was from a separate client. The heartbeat makes model calls without you present: email triage every ~30 minutes, plus a daily briefing.
+**Local development:** run `wrangler dev --ip 0.0.0.0` and point the apps at `http://<Mac>.local:8787`. Plain HTTP is accepted only for local and private-network hosts.
 
 ## 3. Google (Gmail + Drive): personal-use OAuth app in Production
 
@@ -107,7 +97,7 @@ cd apple && xcodegen && open Orbit.xcodeproj
 ```
 
 1. In Xcode, go to Settings → Accounts and add your Apple ID. This creates a free **Personal Team**.
-2. In `project.yml`, set `ORBIT_BUNDLE_PREFIX` to something unique, such as `com.<yourname>.orbit`, then run `xcodegen` again.
+2. In `project.yml`, set `ORBIT_BUNDLE_PREFIX` to something unique, such as `com.ppratick.orbit` (the iPhone test build used `com.ppratick.orbit.ios`), then run `xcodegen` again.
 3. Select your Personal Team under *Signing & Capabilities* for both targets.
 4. **Mac:** run the `Orbit-macOS` scheme. It stays in the menu bar as the companion.
 5. **iPhone:**
@@ -119,7 +109,7 @@ cd apple && xcodegen && open Orbit.xcodeproj
 
 Free Personal Team limits (Apple's membership comparison page):
 - iPhone provisioning profiles expire **7 days** after issue, so re-run from Xcode weekly.
-- At most 3 apps per device.
+- At most 3 apps per device. Finance Coach was removed from your iPhone to make room for Orbit.
 - **No Push Notifications capability.**
 - Background modes are available, so opportunistic background refresh is used.
 - Whether the development-signed Mac app also stops launching after 7 days is not verified.

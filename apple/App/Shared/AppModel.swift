@@ -66,8 +66,8 @@ final class AppModel: NSObject, ObservableObject {
     /// Pair with a one-time code from another Orbit device, or (first device) with the admin token.
     func pair(server: String, code: String, adminToken: String, name: String) async {
         let trimmed = server.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: trimmed), url.scheme == "https" || url.host == "localhost" || url.host == "127.0.0.1" else {
-            banner = "Enter the Worker URL (https://…)"
+        guard let url = URL(string: trimmed), url.scheme == "https" || (url.scheme == "http" && Self.isLocalHost(url.host ?? "")) else {
+            banner = "Enter the Worker URL (https://…; plain http only for a local development server)"
             return
         }
         do {
@@ -89,6 +89,15 @@ final class AppModel: NSObject, ObservableObject {
         } catch {
             banner = "Pairing failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Plain-HTTP is accepted only for local development servers (this Mac, Bonjour .local names, private LAN IPs).
+    static func isLocalHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if h == "localhost" || h == "127.0.0.1" || h.hasSuffix(".local") { return true }
+        let p = h.split(separator: ".").compactMap { Int($0) }
+        guard p.count == 4 else { return false }
+        return p[0] == 10 || (p[0] == 192 && p[1] == 168) || (p[0] == 172 && (16...31).contains(p[1]))
     }
 
     func unpair() {
