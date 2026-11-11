@@ -1,0 +1,18 @@
+# Dependencies & build output
+node_modules/
+.wrangler/
+dist/
+# Local secrets — never commit
+.dev.vars
+.dev.vars.*
+*.p8
+# Apple
+apple/*.xcodeproj/
+apple/build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.build/
+.swiftpm/
+# OS
+.DS_Store

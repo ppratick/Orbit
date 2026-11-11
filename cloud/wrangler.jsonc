@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "orbit",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // Heartbeat: fires every 10 min and rotates 3 phases (email / responsibilities / briefing),
+  // so each phase runs every ~30 min while staying under Free-plan per-invocation limits.
+  "triggers": { "crons": ["*/10 * * * *"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "orbit",
+      // Replace with the id printed by `wrangler d1 create orbit` before deploying.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "OPENAI_MODEL": "gpt-6.1-sol", // confirm the exact model id your client used
+    "OPENAI_AUTH_MODE": "chatgpt", // chatgpt | api_key | chatgpt_then_api_key
+    "OPENAI_BASE_URL": "https://api.openai.com/v1",
+    "ORBIT_TIMEZONE": "America/New_York",
+    "ORBIT_CALENDAR_NAME": "Orbit"
+  }
+  // Secrets (set with `wrangler secret put NAME`, or .dev.vars locally):
+  //   ADMIN_TOKEN, ENCRYPTION_KEY, OPENAI_API_KEY (optional fallback),
+  //   CHATGPT_OAUTH_CLIENT_ID, CHATGPT_OAUTH_AUTHORIZE_URL, CHATGPT_OAUTH_TOKEN_URL,
+  //   CHATGPT_OAUTH_REDIRECT_URI, CHATGPT_OAUTH_SCOPES, CHATGPT_OAUTH_EXTRA_PARAMS (optional JSON),
+  //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, PUBLIC_BASE_URL,
+  //   APNS_KEY_P8, APNS_KEY_ID, APNS_TEAM_ID, APNS_TOPIC   (optional)
+  //   CF_ACCOUNT_ID, CF_BROWSER_TOKEN                       (optional, Browser Run REST)
+}
