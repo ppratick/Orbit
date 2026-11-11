@@ -3,15 +3,16 @@ import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import assert from "node:assert/strict";
-import { startMockOpenAI, oauth } from "./mock-openai.mjs";
+import { startMockOpenAI, siwc, issueTokens, signIdToken } from "./mock-openai.mjs";
 
 const PORT = 18787, MOCK = 18999;
 const BASE = `http://127.0.0.1:${PORT}`;
 const ADMIN = "admin-" + randomBytes(8).toString("hex");
 const state = mkdtempSync(join(process.env.ORBIT_TEST_TMP ?? tmpdir(), "orbit-e2e-"));
-const cwd = new URL("../..", import.meta.url).pathname;
+const cwd = fileURLToPath(new URL("../..", import.meta.url));
 const vars = {
   ADMIN_TOKEN: ADMIN,
   ENCRYPTION_KEY: randomBytes(32).toString("base64"),
@@ -19,13 +20,12 @@ const vars = {
   OPENAI_BASE_URL: `http://127.0.0.1:${MOCK}/v1`,
   PUBLIC_BASE_URL: BASE,
   GOOGLE_CLIENT_ID: "test-client.apps.googleusercontent.com",
-  OPENAI_AUTH_MODE: "chatgpt_then_api_key",
-  CHATGPT_OAUTH_CLIENT_ID: "orbit-test-client",
-  CHATGPT_OAUTH_AUTHORIZE_URL: `http://127.0.0.1:${MOCK}/oauth/authorize`,
-  CHATGPT_OAUTH_TOKEN_URL: `http://127.0.0.1:${MOCK}/oauth/token`,
-  CHATGPT_OAUTH_REDIRECT_URI: "orbit://oauth/chatgpt",
-  CHATGPT_OAUTH_SCOPES: "openid email offline_access",
+  // Production default: Sign in with ChatGPT only; the paid API key must never be used.
+  OPENAI_AUTH_MODE: "chatgpt",
+  SIWC_ISSUER: `http://127.0.0.1:${MOCK}`,
+  CHATGPT_RESPONSES_BASE_URL: `http://127.0.0.1:${MOCK}/v1`,
 };
+const CLIENT_ID = "oaiapp_test123";
 
 let passed = 0;
 async function step(name, fn) {
@@ -87,6 +87,47 @@ try {
     assert.deepEqual(caps.body.capabilities, ["calendar.create_event", "calendar.update_event", "reminders.create", "mac.read_file"]);
     await api("/v1/devices/me", { method: "PUT", token: phone, body: { capabilities: ["calendar.create_event", "reminders.create"] } });
   });
+  await step("before sign-in, chat says to sign in with ChatGPT (no paid fallback)", async () => {
+    const c = (await api("/v1/conversations", { method: "POST", token: mac, body: {} })).body.id;
+    const r = await api(`/v1/conversations/${c}/messages`, { method: "POST", token: mac, body: { content: "hello", client_msg_id: "pre1" } });
+    assert.match(r.body.messages.at(-1).content, /Sign in with ChatGPT/);
+    assert.equal(requests.length, 0, "no model request, and the API key was never used");
+    await api(`/v1/conversations/${c}`, { method: "DELETE", token: mac });
+  });
+  await step("sign-in config exposes the official dynamic-registration parameters", async () => {
+    const cfg = (await api("/v1/accounts/chatgpt/config", { token: mac })).body;
+    assert.equal(cfg.authorize_url, `${vars.SIWC_ISSUER}/api/accounts/authorize`);
+    assert.equal(cfg.scopes, "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct");
+    assert.equal(cfg.resource, "https://api.openai.com/v1");
+    assert.equal(cfg.agent_name_hint, "Orbit");
+    assert.equal(cfg.registration, null);
+  });
+  await step("credential import rejects bad ID tokens (nonce, audience, signature, dynamic client id)", async () => {
+    const t = issueTokens(CLIENT_ID, { nonce: "n-good" });
+    const bad = async (body, re) => {
+      const r = await api("/v1/accounts/chatgpt/import", { method: "POST", token: mac, body });
+      assert.equal(r.status, 400, JSON.stringify(r.body));
+      assert.match(r.body.error.message, re);
+    };
+    await bad({ client_id: CLIENT_ID, nonce: "n-other", ...t }, /nonce/);
+    await bad({ client_id: "oaiapp_someone_else", nonce: "n-good", ...t }, /audience/);
+    await bad({ client_id: "dynamic_agent_client", nonce: "n-good", ...t }, /issued client ID/);
+    const forged = t.id_token.split(".");
+    forged[1] = Buffer.from(JSON.stringify({ iss: vars.SIWC_ISSUER, aud: CLIENT_ID, sub: "attacker", exp: 9e9, nonce: "n-good" })).toString("base64url");
+    await bad({ client_id: CLIENT_ID, nonce: "n-good", ...t, id_token: forged.join(".") }, /signature/);
+  });
+  await step("credential import from a device's local sign-in is validated and stored encrypted", async () => {
+    const t = issueTokens(CLIENT_ID, { nonce: "n-1" });
+    const r = await api("/v1/accounts/chatgpt/import", { method: "POST", token: mac, body: { client_id: CLIENT_ID, nonce: "n-1", ...t } });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(r.body.plan_usage, true);
+    assert.equal(r.body.email, "me@example.com");
+    assert.match(r.body.worker_host_id, /^urn:uuid:/);
+    const all = JSON.stringify((await api("/v1/accounts")).body) + JSON.stringify((await api("/v1/sync?since=0")).body);
+    assert.ok(!all.includes("siwc-access") && !all.includes("siwc-refresh") && !all.includes(t.id_token), "no tokens leak");
+    const cfg = (await api("/v1/accounts/chatgpt/config", { token: phone })).body;
+    assert.equal(cfg.registration.client_id, CLIENT_ID, "other devices reuse the issued client id for reauth");
+  });
   await step("chat: model tool call saves memory; reply persisted", async () => {
     conv = (await api("/v1/conversations", { method: "POST", token: phone, body: {} })).body.id;
     const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: "Please remember I like short replies", client_msg_id: "c1" } });
@@ -112,7 +153,12 @@ try {
     assert.ok(!reply.includes("search_email") && !reply.includes("github_search"));
     assert.ok(reply.includes("add_calendar_event") && reply.includes("mac_read_file"));
     assert.ok(requests.at(-1).instructions.includes("Prefers short replies"));
-    assert.ok(requests.at(-1).store === false);
+    const last = requests.at(-1);
+    assert.equal(last.store, false);
+    assert.equal(last.stream, true);
+    assert.ok(!("max_output_tokens" in last));
+    assert.equal(last.tools[0].type, "namespace");
+    assert.match(last._auth, /^siwc-access-/);
   });
   let calTask;
   await step("Orbit-calendar event is auto-allowed and queued for an Apple device", async () => {
@@ -263,51 +309,67 @@ try {
     assert.match(md, /Return headphones/);
     assert.match(md, /### Please remember I like short replies/);
   });
-  await step("before ChatGPT is linked, the API key is used (no fallback noise)", async () => {
-    assert.equal(requests.at(-1)._auth, "test-key");
-    const m = (await api("/v1/model")).body;
-    assert.equal(m.auth_mode, "chatgpt_then_api_key");
-    assert.equal(m.chatgpt_accounts.length, 0);
+  await step("model routing: Luna for simple turns, Sol for harder or multi-step work", async () => {
+    await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "hi there", client_msg_id: "m1" } });
+    assert.equal(requests.at(-1).model, "gpt-6-luna");
+    await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "Draft a reply comparing both offers", client_msg_id: "m2" } });
+    assert.equal(requests.at(-1).model, "gpt-6.1-sol");
+    const msgs = (await api(`/v1/conversations/${conv}/messages`)).body.messages;
+    assert.equal(msgs.at(-1).meta.model, "gpt-6.1-sol", "model recorded on the reply");
   });
-  await step("ChatGPT sign-in: PKCE authorize → device posts redirect → Worker exchanges code", async () => {
-    const link = (await api("/v1/accounts/chatgpt/link", { method: "POST", token: mac })).body;
-    const u = new URL(link.url);
-    assert.equal(u.searchParams.get("code_challenge_method"), "S256");
-    assert.equal(u.searchParams.get("redirect_uri"), "orbit://oauth/chatgpt");
-    assert.ok(!link.url.includes("code_verifier"), "verifier never leaves the Worker");
-    const auth = await fetch(link.url, { redirect: "manual" });
-    const callback = auth.headers.get("location");
-    assert.match(callback, /^orbit:\/\/oauth\/chatgpt\?code=/);
-    const done = await api("/v1/accounts/chatgpt/complete", { method: "POST", token: mac, body: { callback_url: callback } });
-    assert.equal(done.status, 201, JSON.stringify(done.body));
-    assert.equal(done.body.identity, "me@example.com");
-    const replay = await api("/v1/accounts/chatgpt/complete", { method: "POST", token: mac, body: { callback_url: callback } });
-    assert.equal(replay.status, 400, "state is single-use");
-    const accts = JSON.stringify((await api("/v1/accounts")).body);
-    assert.ok(!accts.includes("chatgpt-access") && !accts.includes("chatgpt-refresh"), "tokens never returned");
+  await step("model IDs verified against the signed-in account's catalog", async () => {
+    const m = (await api("/v1/model?verify=1")).body;
+    assert.deepEqual(m.verified, { basic: true, advanced: true });
+    assert.ok(!m.catalog.some((x) => x.slug === "hidden"));
   });
-  await step("chat now uses the ChatGPT access token, not the API key", async () => {
-    const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "hi via chatgpt", client_msg_id: "g1" } });
-    assert.equal(r.status, 201);
-    assert.equal(requests.at(-1)._auth, "chatgpt-access-1");
-    assert.ok(!JSON.stringify(requests.at(-1).input).includes("chatgpt-access"), "token not in model context");
+  await step("streaming: SSE deltas, tool progress, then the stored reply", async () => {
+    const r = await fetch(`${BASE}/v1/conversations/${conv}/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${phone}`, "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ content: "please remember this", client_msg_id: "s1" }),
+    });
+    assert.match(r.headers.get("content-type"), /text\/event-stream/);
+    const raw = await r.text();
+    const events = raw.trim().split("\n\n").map((b) => ({ event: b.match(/^event: (.*)$/m)?.[1], data: JSON.parse(b.match(/^data: (.*)$/m)?.[1] ?? "null") }));
+    const kinds = events.map((e) => e.event);
+    assert.ok(kinds.includes("tool") && kinds.includes("delta") && kinds.at(-1) === "done", kinds.join(","));
+    const streamed = events.filter((e) => e.event === "delta").map((e) => e.data.text).join("");
+    const done = events.at(-1).data;
+    assert.equal(streamed, done.messages.at(-1).content, "deltas add up to the stored reply");
+    const replay = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: "please remember this", client_msg_id: "s1" } });
+    assert.equal(replay.body.replayed, true);
   });
-  await step("revoked access token → refresh (with rotation) → retry succeeds", async () => {
-    oauth.rejectNext = 1;
+  await step("expired/revoked access token → serialized refresh with rotation → retry succeeds", async () => {
+    siwc.rejectNext = 1;
+    const before = siwc.issued;
     const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "after revoke", client_msg_id: "g2" } });
     assert.match(r.body.messages.at(-1).content, /Echo: after revoke/);
-    assert.equal(requests.at(-1)._auth, "chatgpt-access-2");
+    assert.equal(siwc.issued, before + 1, "exactly one refresh");
+    assert.equal(requests.at(-1)._auth, `siwc-access-${siwc.issued}`);
     await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "again", client_msg_id: "g3" } });
-    assert.equal(requests.at(-1)._auth, "chatgpt-access-2", "refreshed token persisted");
+    assert.equal(siwc.issued, before + 1, "refreshed token persisted and reused");
   });
-  await step("plan quota exhausted → falls back to API key and logs it (chatgpt_then_api_key mode)", async () => {
-    oauth.quotaBlocked = true;
+  await step("plan usage limit surfaces a clear message and never falls back to the paid API", async () => {
+    siwc.quota = true;
     const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "quota", client_msg_id: "g4" } });
-    oauth.quotaBlocked = false;
-    assert.match(r.body.messages.at(-1).content, /Echo: quota/);
-    assert.equal(requests.at(-1)._auth, "test-key");
-    const act = (await api("/v1/activity")).body.activity;
-    assert.ok(act.some((a) => a.type === "llm.fallback"));
+    siwc.quota = false;
+    assert.match(r.body.messages.at(-1).content, /usage limit/);
+    assert.ok(!requests.some((q) => q._auth === "test-key"), "API key never used");
+    assert.ok(!(await api("/v1/activity")).body.activity.some((a) => a.type === "llm.fallback"));
+  });
+  await step("sign out revokes the refresh token and keeps the client registration", async () => {
+    const r = (await api("/v1/accounts/chatgpt/signout", { method: "POST", token: mac })).body;
+    assert.equal(r.revoked, true);
+    assert.equal(siwc.revoked.at(-1).token_type_hint, "refresh_token");
+    assert.equal(siwc.revoked.at(-1).client_id, CLIENT_ID);
+    const cfg = (await api("/v1/accounts/chatgpt/config", { token: mac })).body;
+    assert.equal(cfg.registration.client_id, CLIENT_ID);
+    assert.equal(cfg.registration.status, "signed_out");
+    const c = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "hi", client_msg_id: "g5" } });
+    assert.match(c.body.messages.at(-1).content, /sign in again/i);
+    // Re-sign-in with the saved client id restores access.
+    const t = issueTokens(CLIENT_ID, { nonce: "n-2" });
+    assert.equal((await api("/v1/accounts/chatgpt/import", { method: "POST", token: mac, body: { client_id: CLIENT_ID, nonce: "n-2", ...t } })).status, 201);
   });
   await step("revoked device loses access", async () => {
     const devs = (await api("/v1/devices")).body.devices;

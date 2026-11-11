@@ -2,7 +2,6 @@ import type { Env } from "./env";
 import { HttpError, json } from "./http";
 import { handleAuthed, redeem } from "./routes";
 import { googleCallback } from "./connectors/google";
-import { chatgptComplete } from "./agent/llmauth";
 import { heartbeat, phaseFor } from "./heartbeat";
 
 const VERSION = "0.1.0";
@@ -26,15 +25,6 @@ export default {
           return page("Connected", `${r.email} is now connected to Orbit. You can close this tab.`);
         } catch (e) {
           return page("Could not connect", e instanceof Error ? e.message : String(e), 400);
-        }
-      }
-      // Used when the ChatGPT OAuth client's registered redirect URI points at this Worker.
-      if (url.pathname === "/oauth/chatgpt/callback" && req.method === "GET") {
-        try {
-          const r = await chatgptComplete(env, { callback_url: url.toString() });
-          return page("Signed in", `${r.identity} is now linked for Orbit's model access. You can close this tab.`);
-        } catch (e) {
-          return page("Could not sign in", e instanceof Error ? e.message : String(e), 400);
         }
       }
       if (url.pathname === "/v1/devices/redeem" && req.method === "POST") return await redeem(req, env);

@@ -2,7 +2,8 @@ import type { Env } from "../env";
 import { HttpError } from "../http";
 import { listMemories, listResponsibilities } from "../memory";
 import { newId, now, parseJson, truncate } from "../util";
-import { respond, type InputItem } from "./llm";
+import { friendlyError, respond, type InputItem } from "./llm";
+import { chooseModel } from "./router";
 import { toolsFor, type ToolCtx } from "./tools";
 
 const MAX_STEPS = 6;
@@ -92,13 +93,16 @@ export function historyToInput(rows: MsgRow[]): InputItem[] {
     else if (r.role === "system") input.push({ role: "developer", content: r.content });
     else if (r.role === "tool_call" && outputs.has(String(m.call_id))) {
       for (const reasoning of (m.reasoning as Record<string, unknown>[] | undefined) ?? []) input.push(reasoning as InputItem);
-      input.push({ type: "function_call", call_id: String(m.call_id), name: String(m.name), arguments: String(m.arguments ?? "{}") });
+      input.push({ type: "function_call", call_id: String(m.call_id), name: String(m.name), arguments: String(m.arguments ?? "{}"), ...(m.namespace ? { namespace: String(m.namespace) } : {}) });
     } else if (r.role === "tool_result" && calls.has(String(m.call_id))) {
       input.push({ type: "function_call_output", call_id: String(m.call_id), output: r.content });
     }
   }
   return input;
 }
+
+/** Streaming hooks: text deltas and tool progress, sent to the client as server-sent events. */
+export type TurnEmitter = (event: "delta" | "tool" | "status", data: Record<string, unknown>) => void | Promise<void>;
 
 export interface TurnResult {
   user_message_id: string;
@@ -117,6 +121,7 @@ export async function runTurn(
   clientMsgId: string | null,
   deviceId: string | null,
   role: "user" | "system" = "user",
+  emit?: TurnEmitter,
 ): Promise<TurnResult> {
   const conv = await env.DB.prepare("SELECT id, title FROM conversations WHERE id = ?").bind(conversationId).first<{ id: string; title: string }>();
   if (!conv) throw new HttpError(404, "Conversation not found", "not_found");
@@ -159,22 +164,27 @@ export async function runTurn(
   };
 
   let finalText = "";
+  let model = "";
+  const deviceResult = role === "system";
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
-      const res = await respond(env, { instructions, input, tools: defs });
+      model = chooseModel(env, "chat", { text: userText, step, deviceResult });
+      await emit?.("status", { step, model });
+      const res = await respond(env, { model, instructions, input, tools: defs, onDelta: emit ? (d) => emit("delta", { text: d }) : undefined });
       if (!res.calls.length) {
         finalText = res.text.trim() || "(no response)";
         break;
       }
       res.calls.forEach((c, i) => {
         // Attach reasoning items to the first call of the step so they replay in order.
-        push("tool_call", "", { call_id: c.call_id, name: c.name, arguments: c.arguments, reasoning: i === 0 ? res.reasoning : undefined });
+        push("tool_call", "", { call_id: c.call_id, name: c.name, namespace: c.namespace, arguments: c.arguments, reasoning: i === 0 ? res.reasoning : undefined });
         if (i === 0) for (const r of res.reasoning) input.push(r as InputItem);
-        input.push({ type: "function_call", call_id: c.call_id, name: c.name, arguments: c.arguments });
+        input.push({ type: "function_call", call_id: c.call_id, name: c.name, arguments: c.arguments, ...(c.namespace ? { namespace: c.namespace } : {}) });
       });
       for (const c of res.calls) {
         let output: string;
         const tool = byName.get(c.name);
+        await emit?.("tool", { name: c.name, state: "running" });
         if (!tool) output = `Error: unknown or unavailable tool ${c.name}`;
         else {
           try {
@@ -184,15 +194,16 @@ export async function runTurn(
             output = `Error: ${e instanceof Error ? e.message : String(e)}`;
           }
         }
+        await emit?.("tool", { name: c.name, state: output.startsWith("Error:") ? "error" : "done" });
         push("tool_result", truncate(output, 16000), { call_id: c.call_id, name: c.name });
         input.push({ type: "function_call_output", call_id: c.call_id, output: truncate(output, 16000) });
       }
       if (step === MAX_STEPS - 1) finalText = "I stopped after several steps without finishing. Tell me how you'd like to continue.";
     }
   } catch (e) {
-    finalText = `Sorry — I couldn't reach the AI model: ${e instanceof Error ? e.message : String(e)}`;
+    finalText = `Sorry — I couldn't get a response: ${friendlyError(e)}`;
   }
-  push("assistant", finalText);
+  push("assistant", finalText, model ? { model } : null);
 
   const title = conv.title === "New conversation" && role === "user" ? truncate(userText.replace(/\s+/g, " "), 60) : conv.title;
   await env.DB.batch([

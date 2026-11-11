@@ -17,6 +17,10 @@ final class AppModel: NSObject, ObservableObject {
     @Published var failedSend: [String: (text: String, clientId: String)] = [:]
     @Published var banner: String?
     @Published var modelInfo: APIClient.ModelInfo?
+    /// Live text of a reply that is still streaming, per conversation.
+    @Published var streaming: [String: String] = [:]
+    /// Short progress line while a turn runs ("Using remember…", model name).
+    @Published var turnStatus: [String: String] = [:]
 
     let store = OrbitStore()
     private(set) var api: APIClient?
@@ -149,9 +153,9 @@ final class AppModel: NSObject, ObservableObject {
         #endif
     }
 
-    func refreshModelInfo() async {
+    func refreshModelInfo(verify: Bool = false) async {
         guard let api else { return }
-        modelInfo = try? await api.modelInfo()
+        do { modelInfo = try await api.modelInfo(verify: verify) } catch { if verify { banner = error.localizedDescription } }
     }
 
     // MARK: Chat
@@ -176,16 +180,40 @@ final class AppModel: NSObject, ObservableObject {
         let local = Message(id: "local-\(clientId)", conversationId: conversationId, role: "user", content: text, meta: nil, createdAt: Int64(Date().timeIntervalSince1970 * 1000))
         store.upsert(messages: [local], conversationId: conversationId)
         sending.insert(conversationId)
-        defer { sending.remove(conversationId) }
+        streaming[conversationId] = ""
+        defer {
+            sending.remove(conversationId)
+            streaming[conversationId] = nil
+            turnStatus[conversationId] = nil
+        }
         do {
-            let r = try await api.sendMessage(conversationId: conversationId, content: text, clientMessageId: clientId)
-            store.upsert(messages: r.messages, conversationId: conversationId)
+            var final: TurnResponse?
+            for try await event in api.streamMessage(conversationId: conversationId, content: text, clientMessageId: clientId) {
+                switch event {
+                case .delta(let d): streaming[conversationId, default: ""] += d
+                case .status(let model, _): turnStatus[conversationId] = Self.modelLabel(model)
+                case .tool(let name, let state):
+                    if state == "running" {
+                        streaming[conversationId] = "" // text before a tool call was a preamble; the final answer follows
+                        turnStatus[conversationId] = "Using \(name.replacingOccurrences(of: "_", with: " "))…"
+                    }
+                case .done(let r): final = r
+                }
+            }
+            if let r = final { store.upsert(messages: r.messages, conversationId: conversationId) }
             await store.sync(using: api) // brings the server copy of the user message
             store.removeMessage(local.id)
         } catch {
+            // Retrying with the same client id is safe: the server replays a finished turn instead of re-running it.
             failedSend[conversationId] = (text, clientId)
             banner = "Not sent: \(error.localizedDescription)"
         }
+    }
+
+    static func modelLabel(_ id: String) -> String {
+        if id.contains("luna") { return "Luna" }
+        if id.contains("sol") { return "Sol" }
+        return id
     }
 
     func retry(in conversationId: String) async {

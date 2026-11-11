@@ -9,7 +9,7 @@ import { sync } from "./sync";
 import { heartbeat, PHASES, type Phase } from "./heartbeat";
 import { listAccounts, publicAccount, upsertAccount } from "./accounts";
 import { googleAuthUrl } from "./connectors/google";
-import { authMode, chatgptAuthUrl, chatgptComplete } from "./agent/llmauth";
+import { authMode, importCredentials, modelCatalog, signInConfig, signOut } from "./agent/llmauth";
 import { icloudMail } from "./connectors/icloud";
 import { github } from "./connectors/github";
 import { slackApi } from "./connectors/slack";
@@ -110,8 +110,38 @@ router.on("GET", "/v1/conversations/:id/messages", async (r, p, c) => {
 router.on("POST", "/v1/conversations/:id/messages", async (r, p, c) => {
   const b = await readJson<{ content: string; client_msg_id?: string }>(r);
   const content = str(b.content, "content", { max: 20000 });
-  const res = await runTurn(c.env, p.id, content, b.client_msg_id ? String(b.client_msg_id).slice(0, 80) : null, deviceId(c));
-  return json(res, res.replayed ? 200 : 201);
+  const clientId = b.client_msg_id ? String(b.client_msg_id).slice(0, 80) : null;
+  if (!(r.headers.get("accept") ?? "").includes("text/event-stream")) {
+    const res = await runTurn(c.env, p.id, content, clientId, deviceId(c));
+    return json(res, res.replayed ? 200 : 201);
+  }
+  // Streaming reply (server-sent events): status/tool/delta events while the turn runs, then `done`
+  // with the stored messages (the source of truth), or `error`.
+  if (!(await c.env.DB.prepare("SELECT 1 FROM conversations WHERE id = ?").bind(p.id).first())) throw new HttpError(404, "Conversation not found", "not_found");
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+  let open = true;
+  const send = async (event: string, data: unknown) => {
+    if (!open) return;
+    try {
+      await writer.write(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+    } catch {
+      open = false; // client went away; the turn still completes and is stored for sync
+    }
+  };
+  const work = (async () => {
+    try {
+      const res = await runTurn(c.env, p.id, content, clientId, deviceId(c), "user", send);
+      await send("done", res);
+    } catch (e) {
+      await send("error", e instanceof HttpError ? { code: e.code, message: e.message } : { code: "internal", message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      if (open) await writer.close().catch(() => undefined);
+    }
+  })();
+  c.exec.waitUntil(work);
+  return new Response(readable, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "x-accel-buffering": "no" } });
 });
 router.on("GET", "/v1/search", async (r, _p, c) => {
   const q = new URL(r.url).searchParams.get("q") ?? "";
@@ -296,15 +326,35 @@ router.on("POST", "/v1/accounts/google/link", async (r, _p, c) => {
   const b = await readJson<{ label?: string }>(r).catch(() => ({}) as { label?: string });
   return json({ url: await googleAuthUrl(c.env, truncate(b.label ?? "", 80)) });
 });
-// ChatGPT sign-in: the device opens `url` (ASWebAuthenticationSession) and posts back the redirect it captured.
-router.on("POST", "/v1/accounts/chatgpt/link", async (_r, _p, c) => json({ ...(await chatgptAuthUrl(c.env)), auth_mode: authMode(c.env) }));
-router.on("POST", "/v1/accounts/chatgpt/complete", async (r, _p, c) => {
-  const b = await readJson<{ callback_url?: string; code?: string; state?: string }>(r);
-  return json(await chatgptComplete(c.env, b), 201);
+// Sign in with ChatGPT (official dynamic client registration). Devices run the browser flow locally
+// (loopback callback) and transfer the resulting credential record here; the Worker validates and owns it.
+router.on("GET", "/v1/accounts/chatgpt/config", async (_r, _p, c) => json(await signInConfig(c.env)));
+router.on("POST", "/v1/accounts/chatgpt/import", async (r, _p, c) => {
+  const b = await readJson<{ client_id: string; nonce: string; access_token: string; refresh_token?: string; id_token: string; expires_in?: number; scope?: string }>(r);
+  return json(await importCredentials(c.env, b), 201);
 });
-router.on("GET", "/v1/model", async (_r, _p, c) => {
+router.on("POST", "/v1/accounts/chatgpt/signout", async (_r, _p, c) => json(await signOut(c.env)));
+router.on("GET", "/v1/model", async (r, _p, c) => {
   const linked = (await listAccounts(c.env, "chatgpt")).map(publicAccount);
-  return json({ model: c.env.OPENAI_MODEL, auth_mode: authMode(c.env), chatgpt_accounts: linked, api_key_configured: !!c.env.OPENAI_API_KEY });
+  const info: Record<string, unknown> = {
+    basic_model: c.env.OPENAI_MODEL_BASIC,
+    advanced_model: c.env.OPENAI_MODEL_ADVANCED,
+    auth_mode: authMode(c.env),
+    chatgpt_accounts: linked,
+    api_key_configured: !!c.env.OPENAI_API_KEY,
+  };
+  // ?verify=1 checks the configured IDs against the signed-in account's own model catalog.
+  if (new URL(r.url).searchParams.get("verify") === "1") {
+    try {
+      const catalog = await modelCatalog(c.env);
+      const slugs = new Set(catalog.map((m) => m.slug));
+      info.catalog = catalog;
+      info.verified = { basic: slugs.has(c.env.OPENAI_MODEL_BASIC), advanced: slugs.has(c.env.OPENAI_MODEL_ADVANCED) };
+    } catch (e) {
+      info.verify_error = e instanceof Error ? e.message : String(e);
+    }
+  }
+  return json(info);
 });
 router.on("POST", "/v1/accounts/icloud", async (r, _p, c) => {
   const b = await readJson<{ username: string; app_password: string; label?: string }>(r);

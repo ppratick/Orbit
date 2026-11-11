@@ -146,13 +146,32 @@ public final class APIClient: @unchecked Sendable {
 
     // MARK: Accounts & model sign-in (credentials go straight to the Worker, which encrypts them)
 
-    public struct LinkURL: Decodable, Sendable { public var url: String; public var state: String?; public var redirectUri: String? }
+    public struct LinkURL: Decodable, Sendable { public var url: String }
     public func googleLink(label: String) async throws -> LinkURL { try await send("POST", "v1/accounts/google/link", body: ["label": label]) }
-    public func chatgptLink() async throws -> LinkURL { try await send("POST", "v1/accounts/chatgpt/link") }
-    public func chatgptComplete(callbackURL: URL) async throws {
-        struct R: Decodable { var accountId: String; var identity: String }
-        _ = try await send("POST", "v1/accounts/chatgpt/complete", body: ["callback_url": callbackURL.absoluteString], as: R.self)
+
+    // Sign in with ChatGPT (dynamic client registration). Tokens are posted once to the Worker and never stored here.
+    public struct SignInConfig: Decodable, Sendable {
+        public struct Registration: Decodable, Sendable { public var clientId: String; public var email: String?; public var planUsage: Bool; public var status: String }
+        public var authorizeUrl: String
+        public var tokenUrl: String
+        public var scopes: String
+        public var resource: String
+        public var agentNameHint: String
+        public var registration: Registration?
+        public init(authorizeUrl: String, tokenUrl: String, scopes: String, resource: String, agentNameHint: String, registration: Registration?) {
+            self.authorizeUrl = authorizeUrl; self.tokenUrl = tokenUrl; self.scopes = scopes
+            self.resource = resource; self.agentNameHint = agentNameHint; self.registration = registration
+        }
     }
+    public func chatgptConfig() async throws -> SignInConfig { try await send("GET", "v1/accounts/chatgpt/config") }
+
+    public struct ImportResult: Decodable, Sendable { public var accountId: String; public var email: String?; public var planUsage: Bool }
+    public func importChatGPT(clientId: String, nonce: String, tokens: ChatGPTSignIn.TokenResponse) async throws -> ImportResult {
+        struct B: Encodable { var clientId: String; var nonce: String; var accessToken: String; var refreshToken: String?; var idToken: String; var expiresIn: Int?; var scope: String? }
+        return try await send("POST", "v1/accounts/chatgpt/import", body: B(clientId: clientId, nonce: nonce, accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, idToken: tokens.idToken, expiresIn: tokens.expiresIn, scope: tokens.scope))
+    }
+    public func chatgptSignOut() async throws -> Bool { struct R: Decodable { var revoked: Bool }; return try await send("POST", "v1/accounts/chatgpt/signout", as: R.self).revoked }
+
     public func connectICloud(username: String, appPassword: String) async throws { struct R: Decodable { var id: String }; _ = try await send("POST", "v1/accounts/icloud", body: ["username": username, "app_password": appPassword], as: R.self) }
     public func connectToken(provider: String, token: String, baseURL: String? = nil) async throws {
         struct R: Decodable { var id: String }
@@ -162,8 +181,97 @@ public final class APIClient: @unchecked Sendable {
     }
     public func disconnect(accountId: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("DELETE", "v1/accounts/\(accountId)", as: R.self) }
 
-    public struct ModelInfo: Decodable, Sendable { public var model: String; public var authMode: String; public var chatgptAccounts: [Account]; public var apiKeyConfigured: Bool }
-    public func modelInfo() async throws -> ModelInfo { try await send("GET", "v1/model") }
+    public struct ModelInfo: Decodable, Sendable {
+        public struct Verified: Decodable, Sendable { public var basic: Bool; public var advanced: Bool }
+        public struct CatalogModel: Decodable, Sendable, Identifiable { public var slug: String; public var displayName: String?; public var id: String { slug } }
+        public var basicModel: String
+        public var advancedModel: String
+        public var authMode: String
+        public var chatgptAccounts: [Account]
+        public var apiKeyConfigured: Bool
+        public var verified: Verified?
+        public var catalog: [CatalogModel]?
+        public var verifyError: String?
+    }
+    public func modelInfo(verify: Bool = false) async throws -> ModelInfo { try await send("GET", "v1/model", query: verify ? ["verify": "1"] : [:]) }
+
+    // MARK: Streaming chat
+
+    public enum StreamEvent: Sendable {
+        case status(model: String, step: Int)
+        case delta(String)
+        case tool(name: String, state: String)
+        case done(TurnResponse)
+    }
+
+    /// Send a message and stream the reply (server-sent events). The final `.done` carries the stored
+    /// messages — the source of truth — so a dropped stream can always be recovered by sync or by retrying
+    /// with the same client message id.
+    public func streamMessage(conversationId: String, content: String, clientMessageId: String) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    struct B: Encodable { var content: String; var clientMsgId: String }
+                    var req = URLRequest(url: baseURL.appendingPathComponent("v1/conversations/\(conversationId)/messages"), timeoutInterval: 300)
+                    req.httpMethod = "POST"
+                    req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    req.httpBody = try JSONEncoder.orbit.encode(B(content: content, clientMsgId: clientMessageId))
+                    let (bytes, resp) = try await session.bytes(for: req)
+                    let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                    guard (200..<300).contains(status) else {
+                        var body = Data()
+                        for try await b in bytes { body.append(b); if body.count > 4000 { break } }
+                        if let e = try? JSONDecoder.orbit.decode(ErrorBody.self, from: body) { throw APIError(status: status, code: e.error.code, message: e.error.message) }
+                        throw APIError(status: status, code: "http", message: String(decoding: body, as: UTF8.self))
+                    }
+                    var event = "message"
+                    var data = ""
+                    for try await line in bytes.lines {
+                        if line.hasPrefix("event:") { event = line.dropFirst(6).trimmingCharacters(in: .whitespaces) }
+                        else if line.hasPrefix("data:") { data += line.dropFirst(5).trimmingCharacters(in: .whitespaces) }
+                        // `bytes.lines` drops blank separator lines, so dispatch as soon as a data line completes an event.
+                        if !data.isEmpty, let parsed = try Self.parseEvent(event, data) {
+                            if case .done = parsed { continuation.yield(parsed); continuation.finish(); return }
+                            continuation.yield(parsed)
+                            data = ""
+                            event = "message"
+                        }
+                    }
+                    throw APIError(status: 0, code: "stream_interrupted", message: "The reply stream ended early; it will appear after sync.")
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    static func parseEvent(_ event: String, _ data: String) throws -> StreamEvent? {
+        let d = Data(data.utf8)
+        switch event {
+        case "delta":
+            struct D: Decodable { var text: String }
+            return .delta(try JSONDecoder.orbit.decode(D.self, from: d).text)
+        case "tool":
+            struct T: Decodable { var name: String; var state: String }
+            let t = try JSONDecoder.orbit.decode(T.self, from: d)
+            return .tool(name: t.name, state: t.state)
+        case "status":
+            struct S: Decodable { var model: String; var step: Int }
+            let s = try JSONDecoder.orbit.decode(S.self, from: d)
+            return .status(model: s.model, step: s.step)
+        case "done":
+            return .done(try JSONDecoder.orbit.decode(TurnResponse.self, from: d))
+        case "error":
+            struct E: Decodable { var code: String; var message: String }
+            let e = try JSONDecoder.orbit.decode(E.self, from: d)
+            throw APIError(status: 0, code: e.code, message: e.message)
+        default:
+            return nil
+        }
+    }
 }
 
 /// Type-erasing wrapper so `send` can take any Encodable body.

@@ -152,7 +152,19 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(store.chat(conversationId)) { m in MessageBubble(message: m).id(m.id) }
-                        if model.sending.contains(conversationId) { ProgressView().padding(.leading, 12).id("typing") }
+                        if model.sending.contains(conversationId) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                if let live = model.streaming[conversationId], !live.isEmpty {
+                                    MessageBubble(message: Message(id: "streaming", conversationId: conversationId, role: "assistant", content: live, meta: nil, createdAt: 0))
+                                } else {
+                                    ProgressView().padding(.leading, 12)
+                                }
+                                if let status = model.turnStatus[conversationId] {
+                                    Text(status).font(.caption).foregroundStyle(.secondary).padding(.leading, 12)
+                                }
+                            }
+                            .id("typing")
+                        }
                         if model.failedSend[conversationId] != nil {
                             Button("Couldn't send — tap to retry") { Task { await model.retry(in: conversationId) } }.font(.callout).padding(.leading, 12)
                         }
@@ -161,6 +173,9 @@ struct ChatView: View {
                 }
                 .onChange(of: store.chat(conversationId).count) { _, _ in
                     withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) }
+                }
+                .onChange(of: model.streaming[conversationId]?.count ?? 0) { _, _ in
+                    proxy.scrollTo("typing", anchor: .bottom)
                 }
             }
             Divider()

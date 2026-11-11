@@ -1,7 +1,10 @@
 export interface Env {
   DB: D1Database;
   // Non-secret configuration (wrangler.jsonc "vars")
-  OPENAI_MODEL: string;
+  /** Basic tasks (triage, titles, simple chat): GPT-6 Luna. */
+  OPENAI_MODEL_BASIC: string;
+  /** Harder tasks (multi-step tool work, drafting, research, planning): GPT-6.1 Sol. */
+  OPENAI_MODEL_ADVANCED: string;
   OPENAI_BASE_URL: string;
   ORBIT_TIMEZONE: string;
   ORBIT_CALENDAR_NAME: string;
@@ -11,20 +14,15 @@ export interface Env {
   OPENAI_API_KEY?: string;
   /**
    * Which credential the model client uses:
-   *  - "chatgpt": only the linked ChatGPT account (OAuth access token); fails if unavailable.
+   *  - "chatgpt" (default): only the linked ChatGPT account (Sign in with ChatGPT); fails visibly.
    *  - "api_key": only OPENAI_API_KEY.
-   *  - "chatgpt_then_api_key": ChatGPT first; on auth/quota failure retry with the API key (logged).
+   *  - "chatgpt_then_api_key": paid fallback — disabled unless explicitly configured.
    */
   OPENAI_AUTH_MODE?: string;
-  // ChatGPT sign-in (OAuth 2.0 + PKCE) for the user's own registered Orbit client. All values come from
-  // that client's registration; nothing here is hard-coded because it is specific to the user's client.
-  CHATGPT_OAUTH_CLIENT_ID?: string;
-  CHATGPT_OAUTH_AUTHORIZE_URL?: string;
-  CHATGPT_OAUTH_TOKEN_URL?: string;
-  CHATGPT_OAUTH_SCOPES?: string;
-  CHATGPT_OAUTH_REDIRECT_URI?: string; // must exactly match the client registration
-  CHATGPT_OAUTH_EXTRA_PARAMS?: string; // optional JSON object of extra authorize-URL params
-  CHATGPT_RESPONSES_BASE_URL?: string; // defaults to OPENAI_BASE_URL
+  /** Sign in with ChatGPT issuer. Defaults to https://auth.openai.com (overridable only for local tests). */
+  SIWC_ISSUER?: string;
+  /** Responses/models base URL for ChatGPT plan usage. Defaults to https://api.openai.com/v1. */
+  CHATGPT_RESPONSES_BASE_URL?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   PUBLIC_BASE_URL?: string;

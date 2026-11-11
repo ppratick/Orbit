@@ -20,27 +20,46 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("AI model") {
+            Section(header: Text("AI model"), footer: Text("Orbit uses your ChatGPT plan through Sign in with ChatGPT: Luna for basic tasks, Sol for harder ones. Plan usage limits are shared with your other apps (ChatGPT Settings → Usage). There is no paid API fallback.")) {
                 if let m = model.modelInfo {
-                    LabeledContent("Model", value: m.model)
-                    LabeledContent("Auth mode", value: m.authMode)
-                    if let a = m.chatgptAccounts.first {
-                        LabeledContent("ChatGPT", value: a.status == "active" ? (a.identity ?? "linked") : (a.lastError ?? a.status))
+                    LabeledContent("Basic", value: m.basicModel + (m.verified.map { $0.basic ? " ✓" : " — not in your catalog" } ?? ""))
+                    LabeledContent("Advanced", value: m.advancedModel + (m.verified.map { $0.advanced ? " ✓" : " — not in your catalog" } ?? ""))
+                    if let e = m.verifyError { Text(e).font(.caption).foregroundStyle(.red) }
+                    if let a = m.chatgptAccounts.first(where: { $0.status != "disabled" }) {
+                        LabeledContent("ChatGPT", value: a.status == "active" ? (a.identity.map { _ in a.label } ?? "signed in") : a.status.replacingOccurrences(of: "_", with: " "))
+                        if let e = a.lastError { Text(e).font(.caption).foregroundStyle(.orange) }
+                    } else {
+                        Text("Not signed in").foregroundStyle(.secondary)
                     }
-                    LabeledContent("API key fallback", value: m.apiKeyConfigured ? "configured" : "not configured")
                 }
-                Button(signingIn ? "Signing in…" : "Sign in with ChatGPT") {
+                Button(signingIn ? "Waiting for sign-in in the browser…" : "Continue with ChatGPT") {
                     signingIn = true
                     Task {
                         let s = ChatGPTSignIn()
                         signIn = s
                         if let api = model.api {
-                            do { try await s.signIn(api: api) } catch { model.banner = "ChatGPT sign-in: \(error.localizedDescription)" }
+                            do {
+                                let email = try await s.signIn(api: api)
+                                model.banner = "Signed in with ChatGPT\(email.map { " as \($0)" } ?? "")"
+                            } catch { model.banner = "ChatGPT sign-in: \(error.localizedDescription)" }
                         }
-                        await model.refreshModelInfo()
+                        await model.refreshModelInfo(verify: true)
                         signingIn = false
+                        signIn = nil
                     }
                 }.disabled(signingIn)
+                Button("Verify model IDs with my account") { Task { await model.refreshModelInfo(verify: true) } }
+                if model.modelInfo?.chatgptAccounts.contains(where: { $0.status == "active" || $0.status == "error" }) == true {
+                    Button("Sign out of ChatGPT", role: .destructive) {
+                        Task {
+                            await model.perform { api in
+                                let revoked = try await api.chatgptSignOut()
+                                await MainActor.run { model.banner = revoked ? "Signed out of ChatGPT" : "Signed out locally; remote revocation wasn't confirmed — you can disconnect Orbit in ChatGPT Settings." }
+                            }
+                            await model.refreshModelInfo()
+                        }
+                    }
+                }
             }
 
             Section(header: Text("Accounts"), footer: Text("Credentials are sent once to your Orbit server, encrypted there, and never shown to the AI model.")) {

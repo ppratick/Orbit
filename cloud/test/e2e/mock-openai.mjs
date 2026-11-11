@@ -1,73 +1,100 @@
-// Test double for the OpenAI Responses API, used ONLY by the local e2e suite.
-// It scripts tool calls from keywords so the Worker's real agent loop, policy engine,
-// task queue and storage can be exercised without network access or an API key.
+// Test double for OpenAI's Sign in with ChatGPT issuer + Responses API, used ONLY by the local e2e suite.
+// It enforces the documented ChatGPT-plan-usage request rules (stream=true, store=false, no
+// max_output_tokens, namespaced tools), signs RS256 ID tokens, rotates refresh tokens, and streams SSE.
 import http from "node:http";
-import { createHash } from "node:crypto";
+import { generateKeyPairSync, createSign, randomUUID } from "node:crypto";
 
-// Fake OAuth state (authorization code + PKCE) standing in for the user's ChatGPT OAuth client.
-export const oauth = { codes: new Map(), validAccess: new Set(), refresh: new Map(), issued: 0, rejectNext: 0, quotaBlocked: false };
+const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test-key-1", alg: "RS256", use: "sig" };
+const b64u = (o) => Buffer.from(typeof o === "string" ? o : JSON.stringify(o)).toString("base64url");
+
+export const siwc = { issuer: "", validAccess: new Set(), refresh: new Map(), issued: 0, rejectNext: 0, quota: false, revoked: [] };
+
+export function signIdToken(claims) {
+  const h = b64u({ alg: "RS256", kid: jwk.kid, typ: "JWT" });
+  const p = b64u({ iss: siwc.issuer, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, ...claims });
+  const sig = createSign("RSA-SHA256").update(`${h}.${p}`).sign(privateKey).toString("base64url");
+  return `${h}.${p}.${sig}`;
+}
+
+/** Simulates what a device gets back from the real token endpoint after local sign-in. */
+export function issueTokens(clientId, { sub = "user-123", email = "me@example.com", nonce, scope = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" } = {}) {
+  const n = ++siwc.issued;
+  const access = `siwc-access-${n}`;
+  siwc.validAccess.add(access);
+  siwc.refresh.set(`siwc-refresh-${n}`, { clientId, sub });
+  return { access_token: access, refresh_token: `siwc-refresh-${n}`, id_token: signIdToken({ aud: clientId, sub, email, nonce }), expires_in: 3600, scope, token_type: "Bearer" };
+}
 
 export function startMockOpenAI(port) {
+  siwc.issuer = `http://127.0.0.1:${port}`;
   const requests = [];
   const server = http.createServer(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     const url = new URL(req.url, "http://x");
-    if (url.pathname === "/oauth/authorize") {
-      const code = "code_" + Math.random().toString(36).slice(2);
-      oauth.codes.set(code, { challenge: url.searchParams.get("code_challenge"), method: url.searchParams.get("code_challenge_method"), client: url.searchParams.get("client_id"), redirect: url.searchParams.get("redirect_uri") });
-      res.writeHead(302, { location: `${url.searchParams.get("redirect_uri")}?code=${code}&state=${url.searchParams.get("state")}` });
+    const sendJson = (status, obj) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (url.pathname === "/.well-known/openid-configuration")
+      return sendJson(200, { issuer: siwc.issuer, jwks_uri: `${siwc.issuer}/jwks`, revocation_endpoint: `${siwc.issuer}/api/accounts/oauth/revoke` });
+    if (url.pathname === "/jwks") return sendJson(200, { keys: [jwk] });
+    if (url.pathname === "/api/accounts/oauth/revoke") {
+      siwc.revoked.push(Object.fromEntries(new URLSearchParams(body)));
+      res.writeHead(200);
       return res.end();
     }
-    if (url.pathname === "/oauth/token") {
+    if (url.pathname === "/api/accounts/oauth/token") {
       const f = new URLSearchParams(body);
-      const issue = () => {
-        const n = ++oauth.issued;
-        oauth.validAccess.add(`chatgpt-access-${n}`);
-        oauth.refresh.set(`chatgpt-refresh-${n}`, true);
-        const idPayload = Buffer.from(JSON.stringify({ email: "me@example.com" })).toString("base64url");
-        return { access_token: `chatgpt-access-${n}`, refresh_token: `chatgpt-refresh-${n}`, expires_in: 3600, id_token: `x.${idPayload}.y` };
-      };
-      res.writeHead(200, { "content-type": "application/json" });
-      if (f.get("grant_type") === "authorization_code") {
-        const c = oauth.codes.get(f.get("code"));
-        oauth.codes.delete(f.get("code"));
-        const ok = c && c.method === "S256" && createHash("sha256").update(f.get("code_verifier") ?? "").digest("base64url") === c.challenge && c.redirect === f.get("redirect_uri") && c.client === f.get("client_id");
-        if (!ok) { res.statusCode = 400; return res.end(JSON.stringify({ error: "invalid_grant" })); }
-        return res.end(JSON.stringify(issue()));
-      }
-      if (f.get("grant_type") === "refresh_token" && oauth.refresh.get(f.get("refresh_token"))) {
-        oauth.refresh.delete(f.get("refresh_token")); // rotation
-        return res.end(JSON.stringify(issue()));
-      }
-      res.statusCode = 400;
-      return res.end(JSON.stringify({ error: "invalid_grant" }));
+      const entry = siwc.refresh.get(f.get("refresh_token"));
+      if (f.get("grant_type") !== "refresh_token" || f.get("resource") !== "https://api.openai.com/v1" || !entry || entry.clientId !== f.get("client_id"))
+        return sendJson(400, { error: entry ? "invalid_client" : "invalid_grant" });
+      siwc.refresh.delete(f.get("refresh_token")); // rotation: old refresh token is single-use
+      const t = issueTokens(entry.clientId, { sub: entry.sub });
+      return sendJson(200, t);
     }
-    const j = JSON.parse(body || "{}");
     const auth = (req.headers.authorization ?? "").replace("Bearer ", "");
+    if (url.pathname === "/v1/models") {
+      if (!siwc.validAccess.has(auth)) return sendJson(401, { detail: "bad token" });
+      return sendJson(200, { models: [{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" }, { slug: "gpt-6-luna", display_name: "GPT-6 Luna", visibility: "list" }, { slug: "hidden", visibility: "hide" }] });
+    }
+    // ── Responses API ──
+    const j = JSON.parse(body || "{}");
     j._auth = auth;
     requests.push(j);
-    if (auth.startsWith("chatgpt-access-")) {
-      if (oauth.quotaBlocked) { res.writeHead(429, { "content-type": "application/json" }); return res.end('{"error":{"message":"usage limit"}}'); }
-      if (oauth.rejectNext > 0 || !oauth.validAccess.has(auth)) {
-        oauth.rejectNext = Math.max(0, oauth.rejectNext - 1);
-        oauth.validAccess.delete(auth);
-        res.writeHead(401, { "content-type": "application/json" });
-        return res.end('{"error":{"message":"invalid token"}}');
-      }
-    } else if (auth !== "test-key") {
-      res.writeHead(401, { "content-type": "application/json" });
-      return res.end('{"error":{"message":"bad key"}}');
+    if (siwc.rejectNext > 0 || !siwc.validAccess.has(auth)) {
+      siwc.rejectNext = Math.max(0, siwc.rejectNext - 1);
+      siwc.validAccess.delete(auth);
+      return sendJson(401, { detail: "The required signed identity was not accepted." });
     }
+    const unsupported = ["max_output_tokens", "temperature", "previous_response_id", "metadata", "user"].find((k) => k in j);
+    const badTools = (j.tools ?? []).some((t) => t.type !== "namespace");
+    if (j.stream !== true || j.store !== false || unsupported || badTools || (j.input ?? []).some((i) => i.role === "system"))
+      return sendJson(400, { error: { code: "subscription_sharing_unsupported_capability", param: unsupported ?? (badTools ? "tools" : "stream/store"), message: "unsupported" } });
+    if (siwc.quota) return sendJson(429, { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit" } });
+
     const out = respond(j);
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ id: "resp_mock", output: out, usage: { input_tokens: 1, output_tokens: 1 } }));
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const ev = (o) => res.write(`event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`);
+    ev({ type: "response.created", response: { id: "resp_mock" } });
+    for (const item of out) {
+      if (item.type === "message") {
+        const text = item.content[0].text;
+        // Stream in small chunks to exercise delta handling.
+        for (let i = 0; i < text.length; i += 7) ev({ type: "response.output_text.delta", delta: text.slice(i, i + 7) });
+      }
+      ev({ type: "response.output_item.done", item });
+    }
+    if (j._failMidStream) ev({ type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded" } } });
+    else ev({ type: "response.completed", response: { id: "resp_mock", output: out, usage: { input_tokens: 1, output_tokens: 1 } } });
+    res.end();
   });
   return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, requests })));
 }
 
 let n = 0;
-const call = (name, args) => ({ type: "function_call", call_id: `call_${++n}`, name, arguments: JSON.stringify(args) });
+const call = (name, args) => ({ type: "function_call", call_id: `call_${++n}`, name, namespace: "orbit", arguments: JSON.stringify(args) });
 const text = (t) => ({ type: "message", role: "assistant", content: [{ type: "output_text", text: t }] });
 
 function respond(j) {
@@ -82,7 +109,7 @@ function respond(j) {
   const last = input[input.length - 1];
   if (last?.type === "function_call_output") return [text(`Tool said: ${String(last.output).slice(0, 160)}`)];
   const msg = String(last?.content ?? "");
-  const tools = new Set((j.tools ?? []).map((t) => t.name));
+  const tools = new Set((j.tools ?? []).flatMap((t) => (t.tools ?? []).map((x) => x.name)));
   if (/remember/i.test(msg)) return [call("remember", { kind: "preference", content: "Prefers short replies" })];
   if (/work calendar/i.test(msg)) return [call("add_calendar_event", { title: "Team sync", start: "2026-11-12T15:00:00-05:00", calendar: "Work" })];
   if (/dentist/i.test(msg)) return [call("add_calendar_event", { title: "Dentist", start: "2026-11-13T09:00:00-05:00" })];
@@ -93,3 +120,4 @@ function respond(j) {
   if (/tools\?/i.test(msg)) return [text(`tools: ${[...tools].sort().join(",")}`)];
   return [text(`Echo: ${msg.slice(0, 100)}`)];
 }
+export { randomUUID };
