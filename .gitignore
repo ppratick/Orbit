@@ -16,3 +16,4 @@ xcuserdata/
 .swiftpm/
 # OS
 .DS_Store
+!.dev.vars.example

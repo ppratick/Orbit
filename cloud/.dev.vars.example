@@ -1,0 +1,25 @@
+# Copy to .dev.vars for `wrangler dev` (git-ignored). In production use `wrangler secret put NAME`.
+ADMIN_TOKEN=change-me-long-random
+# 32 random bytes, base64:  openssl rand -base64 32
+ENCRYPTION_KEY=
+PUBLIC_BASE_URL=http://localhost:8787
+
+# Model access — ChatGPT sign-in with your own registered OAuth client (values from that registration)
+OPENAI_AUTH_MODE=chatgpt
+CHATGPT_OAUTH_CLIENT_ID=
+CHATGPT_OAUTH_AUTHORIZE_URL=
+CHATGPT_OAUTH_TOKEN_URL=
+CHATGPT_OAUTH_REDIRECT_URI=orbit://oauth/chatgpt
+CHATGPT_OAUTH_SCOPES=
+# CHATGPT_OAUTH_EXTRA_PARAMS={"key":"value"}
+# Optional API-key fallback (only used when OPENAI_AUTH_MODE is api_key or chatgpt_then_api_key)
+# OPENAI_API_KEY=
+
+# Google (Gmail + Drive) OAuth web client
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+# Optional: Cloudflare Browser Run REST (JS-heavy pages), push fallbacks
+# CF_ACCOUNT_ID=
+# CF_BROWSER_TOKEN=
+# NTFY_TOPIC_URL=https://ntfy.sh/<long-random-topic>

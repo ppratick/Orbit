@@ -1,0 +1,47 @@
+# Generate the Xcode project on your Mac:  brew install xcodegen && cd apple && xcodegen
+# Then open Orbit.xcodeproj, pick your (free) Personal Team under Signing for both targets, and run.
+name: Orbit
+options:
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    # Change to something unique to you; free Personal Teams need a bundle id no one else has registered.
+    ORBIT_BUNDLE_PREFIX: com.example.orbit
+    SWIFT_VERSION: "5.10"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  OrbitKit:
+    path: OrbitKit
+targets:
+  Orbit-iOS:
+    type: application
+    platform: iOS
+    sources: [App/Shared, App/iOS]
+    dependencies:
+      - package: OrbitKit
+    settings:
+      base:
+        PRODUCT_NAME: Orbit
+        PRODUCT_BUNDLE_IDENTIFIER: $(ORBIT_BUNDLE_PREFIX).ios
+        INFOPLIST_FILE: App/iOS/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # No Push Notifications capability: it requires a paid Apple Developer Program membership.
+  Orbit-macOS:
+    type: application
+    platform: macOS
+    sources: [App/Shared, App/macOS]
+    dependencies:
+      - package: OrbitKit
+    settings:
+      base:
+        PRODUCT_NAME: Orbit
+        PRODUCT_BUNDLE_IDENTIFIER: $(ORBIT_BUNDLE_PREFIX).mac
+        INFOPLIST_FILE: App/macOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/macOS/Orbit.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
