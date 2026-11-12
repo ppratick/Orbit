@@ -155,6 +155,20 @@ public final class APIClient: @unchecked Sendable {
     public func addMemory(kind: String, content: String) async throws { struct R: Decodable { var id: String }; _ = try await send("POST", "v1/memories", body: ["kind": kind, "content": content], as: R.self) }
     public func updateMemory(id: String, content: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("PATCH", "v1/memories/\(id)", body: ["content": content], as: R.self) }
     public func deleteMemory(id: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("DELETE", "v1/memories/\(id)", as: R.self) }
+    // MARK: About you
+
+    public struct Profile: Decodable, Sendable { public var sections: [ProfileSection]; public var suggestions: [ProfileSuggestion] }
+    public func profile() async throws -> Profile { try await send("GET", "v1/profile") }
+    /// Saves one section. `baseUpdatedAt` makes the server refuse to overwrite a newer edit from another device (409).
+    public func updateProfile(section: String, content: String, baseUpdatedAt: Millis?) async throws -> ProfileSection {
+        struct B: Encodable { var content: String; var baseUpdatedAt: Millis? }
+        struct R: Decodable { var id: String; var content: String; var updatedAt: Millis }
+        let r = try await send("PUT", "v1/profile/\(section)", body: B(content: content, baseUpdatedAt: baseUpdatedAt), as: R.self)
+        return ProfileSection(id: r.id, content: r.content, updatedAt: r.updatedAt)
+    }
+    public func acceptSuggestion(id: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("POST", "v1/profile/suggestions/\(id)/accept", body: [String: String](), as: R.self) }
+    public func dismissSuggestion(id: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("POST", "v1/profile/suggestions/\(id)/dismiss", as: R.self) }
+
     public func setResponsibilityStatus(id: String, status: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("PATCH", "v1/responsibilities/\(id)", body: ["status": status], as: R.self) }
     public func markRead(notificationId: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("POST", "v1/notifications/\(notificationId)/read", as: R.self) }
     public func exportMarkdown() async throws -> Data { try await send("GET", "v1/export.md", as: Data.self) }

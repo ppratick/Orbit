@@ -7,6 +7,8 @@ export type Entity =
   | "task"
   | "approval"
   | "memory"
+  | "profile"
+  | "profile_suggestion"
   | "responsibility"
   | "notification"
   | "activity"

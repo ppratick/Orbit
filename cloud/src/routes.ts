@@ -15,6 +15,7 @@ import { icloudMail } from "./connectors/icloud";
 import { github } from "./connectors/github";
 import { canvasApi } from "./connectors/canvas";
 import { untrusted } from "./untrusted";
+import { acceptSuggestion, dismissSuggestion, getProfile, SECTION_MAX, setSection } from "./profile";
 import { newId, now, parseJson, truncate } from "./util";
 
 export interface Ctx {
@@ -171,6 +172,23 @@ router.on("DELETE", "/v1/memories/:id", async (_r, p, c) => {
   await deleteMemory(c.env, p.id);
   return json({ ok: true });
 });
+
+// ── About you ────────────────────────────────────────────────────────────────
+router.on("GET", "/v1/profile", async (_r, _p, c) => json(await getProfile(c.env)));
+router.on("PUT", "/v1/profile/:section", async (r, p, c) => {
+  const b = await readJson<{ content?: string; base_updated_at?: number }>(r);
+  const content = str(b.content, "content", { optional: true, max: SECTION_MAX });
+  const base = typeof b.base_updated_at === "number" ? b.base_updated_at : undefined;
+  return json(await setSection(c.env, p.section, content, deviceId(c), base));
+});
+router.on("POST", "/v1/profile/suggestions/:id/accept", async (r, p, c) => {
+  const b = await readJson<{ content?: string; section?: string }>(r).catch(() => ({}) as { content?: string; section?: string });
+  return json(await acceptSuggestion(c.env, p.id, deviceId(c), {
+    content: b.content ? str(b.content, "content", { max: 500 }) : undefined,
+    section: b.section,
+  }));
+});
+router.on("POST", "/v1/profile/suggestions/:id/dismiss", async (_r, p, c) => json(await dismissSuggestion(c.env, p.id)));
 
 // ── Responsibilities ─────────────────────────────────────────────────────────
 router.on("GET", "/v1/responsibilities", async (r, _p, c) => json({ responsibilities: await listResponsibilities(c.env, new URL(r.url).searchParams.get("all") === "1") }));

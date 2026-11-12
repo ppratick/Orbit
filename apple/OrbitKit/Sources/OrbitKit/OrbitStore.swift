@@ -10,6 +10,8 @@ public final class OrbitStore: ObservableObject {
     @Published public private(set) var tasks: [String: OrbitTask] = [:]
     @Published public private(set) var approvals: [String: Approval] = [:]
     @Published public private(set) var memories: [String: Memory] = [:]
+    @Published public private(set) var profile: [String: ProfileSection] = [:]
+    @Published public private(set) var profileSuggestions: [String: ProfileSuggestion] = [:]
     @Published public private(set) var responsibilities: [String: Responsibility] = [:]
     @Published public private(set) var notifications: [String: OrbitNotification] = [:]
     @Published public private(set) var activity: [String: Activity] = [:]
@@ -42,6 +44,10 @@ public final class OrbitStore: ObservableObject {
     public var pendingApprovals: [Approval] { approvals.values.filter { $0.status == "pending" }.sorted { $0.createdAt > $1.createdAt } }
     public var recentTasks: [OrbitTask] { tasks.values.sorted { $0.updatedAt > $1.updatedAt } }
     public var liveMemories: [Memory] { memories.values.filter { $0.deletedAt == nil }.sorted { $0.updatedAt > $1.updatedAt } }
+    public func profileText(_ section: String) -> String { profile[section]?.content ?? "" }
+    public var pendingProfileSuggestions: [ProfileSuggestion] {
+        profileSuggestions.values.filter { $0.status == "pending" }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+    }
     public var openResponsibilities: [Responsibility] {
         responsibilities.values.filter { $0.status == "active" || $0.status == "waiting" }.sorted { ($0.dueAt ?? .max) < ($1.dueAt ?? .max) }
     }
@@ -106,6 +112,8 @@ public final class OrbitStore: ObservableObject {
             approvals[a.id] = merged
         }
         c.memory?.forEach { memories[$0.id] = $0 }
+        c.profile?.forEach { profile[$0.id] = $0 }
+        c.profileSuggestion?.forEach { profileSuggestions[$0.id] = $0 }
         c.responsibility?.forEach { responsibilities[$0.id] = $0 }
         c.activity?.forEach { activity[$0.id] = $0 }
         c.account?.forEach { accounts[$0.id] = $0 }
@@ -130,10 +138,15 @@ public final class OrbitStore: ObservableObject {
         return fresh
     }
 
+    /// Apply the user's own edit right away; sync confirms it moments later.
+    public func upsert(profileSection: ProfileSection) { profile[profileSection.id] = profileSection }
+    public func resolveSuggestion(_ id: String, status: String) { profileSuggestions[id]?.status = status }
+
     public func mergeApprovalDetails(_ list: [Approval]) { list.forEach { approvals[$0.id] = $0 } }
 
     public func clear() {
         conversations = [:]; messages = [:]; tasks = [:]; approvals = [:]; memories = [:]
+        profile = [:]; profileSuggestions = [:]
         responsibilities = [:]; notifications = [:]; activity = [:]; accounts = [:]; devices = [:]; cursor = 0
     }
 
@@ -144,12 +157,15 @@ public final class OrbitStore: ObservableObject {
         var conversations: [Conversation]; var messages: [Message]; var tasks: [OrbitTask]; var approvals: [Approval]
         var memories: [Memory]; var responsibilities: [Responsibility]; var notifications: [OrbitNotification]
         var activity: [Activity]; var accounts: [Account]; var devices: [DeviceInfo]
+        // Optional so caches written by older builds still load.
+        var profile: [ProfileSection]?; var profileSuggestions: [ProfileSuggestion]?
     }
 
     public func save() {
         let s = Snapshot(cursor: cursor, conversations: Array(conversations.values), messages: Array(messages.values), tasks: Array(tasks.values),
                          approvals: Array(approvals.values), memories: Array(memories.values), responsibilities: Array(responsibilities.values),
-                         notifications: Array(notifications.values), activity: Array(activity.values), accounts: Array(accounts.values), devices: Array(devices.values))
+                         notifications: Array(notifications.values), activity: Array(activity.values), accounts: Array(accounts.values), devices: Array(devices.values),
+                         profile: Array(profile.values), profileSuggestions: Array(profileSuggestions.values))
         if let data = try? JSONEncoder().encode(s) {
             #if os(iOS)
             try? data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -172,5 +188,9 @@ public final class OrbitStore: ObservableObject {
         activity = Dictionary(s.activity.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         accounts = Dictionary(s.accounts.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         devices = Dictionary(s.devices.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        profile = Dictionary((s.profile ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        profileSuggestions = Dictionary((s.profileSuggestions ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // A cache from before About you existed never saw the profile rows: pull everything once.
+        if s.profile == nil { cursor = 0 }
     }
 }

@@ -6,7 +6,7 @@ import UIKit
 #endif
 
 enum SettingsDestination: String, Hashable {
-    case assistant = "Assistant", connections = "Connected apps", devices = "Devices", data = "Data & privacy"
+    case assistant = "Assistant", aboutYou = "About you", connections = "Connected apps", devices = "Devices", data = "Data & privacy"
     case icloud = "iCloud Mail", github = "GitHub", canvas = "Canvas", mac = "Mac access"
 }
 
@@ -114,6 +114,8 @@ struct SettingsView: View {
             OrbitGroup {
                 link(.assistant, symbol: "sparkle", tint: OrbitProvider.tint("chatgpt"),
                      subtitle: chatGPTConnected ? "ChatGPT connected · Luna & Sol" : "Connect ChatGPT to start")
+                OrbitRowDivider()
+                aboutYouLink
             }
             OrbitGroup(header: "Connections") {
                 link(.connections, symbol: "square.stack.3d.up.fill", tint: Color(red: 0.3, green: 0.5, blue: 0.98),
@@ -160,6 +162,24 @@ struct SettingsView: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var aboutYouLink: some View {
+        let pending = store.pendingProfileSuggestions.count
+        let filled = ProfileSection.catalog.filter { !store.profileText($0.id).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        let subtitle = pending > 0 ? "\(pending) suggestion\(pending == 1 ? "" : "s") to review"
+            : filled == 0 ? "Help Orbit get to know you" : "\(filled) of \(ProfileSection.catalog.count) sections filled in"
+        return Button { navigation.push(.aboutYou) } label: {
+            OrbitRow(symbol: "person.crop.circle.fill", tint: AboutYouContent.tint, title: SettingsDestination.aboutYou.rawValue,
+                     subtitle: subtitle, accessory: .chevron) {
+                if pending > 0 {
+                    Text("\(pending)").font(.system(size: OrbitTheme.isMac ? 10.5 : 12, weight: .bold)).monospacedDigit()
+                        .foregroundStyle(.black).padding(.horizontal, 7).frame(minWidth: 20, minHeight: 20)
+                        .background(Color.orange, in: Capsule())
+                        .accessibilityLabel("\(pending) suggestions to review")
+                }
+            }
+        }.buttonStyle(OrbitRowButtonStyle())
+    }
+
     private func link(_ destination: SettingsDestination, symbol: String, tint: Color, subtitle: String) -> some View {
         Button { navigation.push(destination) } label: {
             OrbitRow(symbol: symbol, tint: tint, title: destination.rawValue, subtitle: subtitle, accessory: .chevron)
@@ -169,6 +189,7 @@ struct SettingsView: View {
     @ViewBuilder private func destinationContent(_ destination: SettingsDestination) -> some View {
         switch destination {
         case .assistant: assistantSettings
+        case .aboutYou: AboutYouContent()
         case .connections: connectionSettings
         case .devices: deviceSettings
         case .data: dataSettings
@@ -467,7 +488,7 @@ struct SettingsView: View {
             }
             .buttonStyle(OrbitRowButtonStyle()).disabled(syncing)
         }
-        OrbitGroup(header: "Your data", footer: "Exports your memory, tracked items and conversation as a Markdown file.") {
+        OrbitGroup(header: "Your data", footer: "Exports About you, your memory, tracked items and conversation as a Markdown file.") {
             Button {
                 Task {
                     guard let api = model.api else { return }

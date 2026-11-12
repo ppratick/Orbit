@@ -2,6 +2,7 @@ import type { Env } from "../env";
 import type { ToolDef } from "./llm";
 import { createTask } from "../tasks";
 import { addMemory, listMemories, listResponsibilities, searchConversations, updateResponsibility, upsertResponsibility } from "../memory";
+import { PROFILE_SECTIONS, suggestProfileFact } from "../profile";
 import { firstAccount, mailAccount, MAIL_PROVIDERS } from "../connectors";
 import { listAccounts } from "../accounts";
 import { drive } from "../connectors/google";
@@ -114,14 +115,44 @@ async function act(t: ToolCtx, action: string, params: Args): Promise<string> {
   }
 }
 
+function profileSuggestionResult(r: Awaited<ReturnType<typeof suggestProfileFact>>): string {
+  switch (r.status) {
+    case "suggested":
+      return "Suggested for the user's About you profile. It is waiting for their review in Settings and is not saved to the profile yet.";
+    case "already_in_profile":
+      return "Their profile already says this; nothing to do.";
+    case "already_suggested":
+      return "This is already waiting for their review.";
+    case "already_reviewed":
+      return "They already reviewed this suggestion; don't propose it again.";
+    default:
+      return "Their review list is full; don't suggest more right now.";
+  }
+}
+
 const TOOLS: Tool[] = [
   // ── Memory & responsibilities ───────────────────────────────────────────
   {
     name: "remember",
-    description: "Save a durable preference or fact about the user (only things they said or clearly confirmed). Not for secrets.",
-    properties: { kind: { type: "string", enum: ["preference", "fact"] }, content: S("One self-contained sentence.") },
-    required: ["kind", "content"],
-    run: async (t, a) => `Saved memory ${await addMemory(t.env, str(a, "kind"), str(a, "content"), "conversation", t.conversationId)}`,
+    description: "Save a durable preference about how the user likes things done (only things they said or clearly confirmed). Not for facts about their life (use suggest_profile_update) and not for secrets.",
+    properties: { kind: { type: "string", enum: ["preference"] }, content: S("One self-contained sentence.") },
+    required: ["content"],
+    run: async (t, a) => {
+      // Facts belong to the user-owned profile: propose them instead of saving silently.
+      if (str(a, "kind") === "fact") return profileSuggestionResult(await suggestProfileFact(t.env, "context", str(a, "content"), t.conversationId));
+      return `Saved memory ${await addMemory(t.env, "preference", str(a, "content"), "conversation", t.conversationId)}`;
+    },
+  },
+  {
+    name: "suggest_profile_update",
+    description:
+      "Propose a durable fact for the user's About you profile. The user reviews it in Settings; it changes nothing until they accept. Only facts they said or clearly confirmed. Not for secrets.",
+    properties: {
+      section: { type: "string", enum: PROFILE_SECTIONS.map((x) => x.id), description: PROFILE_SECTIONS.map((x) => `${x.id}: ${x.title}`).join("; ") },
+      content: S("One short, self-contained line, e.g. \"Studies computer science at CMU\"."),
+    },
+    required: ["section", "content"],
+    run: async (t, a) => profileSuggestionResult(await suggestProfileFact(t.env, str(a, "section"), str(a, "content"), t.conversationId)),
   },
   {
     name: "search_memory",

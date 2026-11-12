@@ -19,6 +19,30 @@ final class OrbitKitTests: XCTestCase {
         XCTAssertEqual(r.deleted["message"], ["msg_x"])
     }
 
+    func testDecodesAboutYouProfileAndSuggestionsFromSync() throws {
+        let json = """
+        {"cursor":7,"reset":false,"has_more":false,"deleted":{},
+         "changes":{"profile":[{"id":"basics","content":"Sam","updated_at":5,"updated_by":"dev_1"}],
+          "profile_suggestion":[{"id":"psug_1","section":"work","content":"Studies CS at CMU","source":"conversation","source_ref":"conv_orbit_primary","status":"pending","created_at":3,"updated_at":3}]}}
+        """
+        let r = try JSONDecoder.orbit.decode(SyncResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(r.changes.profile?.first?.content, "Sam")
+        XCTAssertEqual(r.changes.profileSuggestion?.first?.section, "work")
+        XCTAssertEqual(ProfileSection.catalog.map(\.id), ["basics", "work", "people", "routines", "goals", "context"])
+    }
+
+    @MainActor
+    func testProfileEditsSurviveOfflineCache() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = OrbitStore(directory: directory)
+        store.upsert(profileSection: ProfileSection(id: "routines", content: "Gym at 7", updatedAt: 9))
+        store.save()
+        let restored = OrbitStore(directory: directory)
+        XCTAssertEqual(restored.profileText("routines"), "Gym at 7")
+        XCTAssertEqual(restored.profileText("goals"), "")
+    }
+
     @MainActor
     func testOngoingHistorySurvivesOfflineCacheAndConversationRelocation() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

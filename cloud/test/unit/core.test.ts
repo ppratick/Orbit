@@ -10,6 +10,7 @@ import { extractGmailText } from "../../src/connectors/google";
 import { historyToInput } from "../../src/agent/agent";
 import { assertPublicUrl } from "../../src/connectors/browser";
 import { phaseFor } from "../../src/heartbeat";
+import { alreadyCovered, appendLine, profileForPrompt } from "../../src/profile";
 import type { Env } from "../../src/env";
 
 const ctx = { orbitCalendar: "Orbit" };
@@ -167,5 +168,21 @@ describe("heartbeat phases", () => {
     const seq = [0, 1, 2, 3, 4, 5].map((i) => phaseFor(base + i * 600_000));
     expect(seq.slice(0, 3)).toEqual(seq.slice(3));
     expect(new Set(seq).size).toBe(3);
+  });
+});
+
+describe("About you profile", () => {
+  it("treats a fact as covered regardless of case, punctuation and spacing", () => {
+    expect(alreadyCovered("Junior at CMU.\nStudies  Computer Science.", "studies computer science")).toBe(true);
+    expect(alreadyCovered("Junior at CMU.", "Has a dog")).toBe(false);
+  });
+  it("appends accepted facts on their own line without duplicating", () => {
+    expect(appendLine("", "Has a dog")).toBe("Has a dog");
+    expect(appendLine("Junior at CMU.\n", "Has a dog")).toBe("Junior at CMU.\nHas a dog");
+    expect(appendLine("Has a dog.", "has a DOG")).toBe("Has a dog.");
+  });
+  it("formats only filled sections for the assistant, in a fixed order", () => {
+    const out = profileForPrompt([{ id: "goals", content: "Run a marathon" }, { id: "basics", content: "Sam\nEastern time" }, { id: "work", content: " " }]);
+    expect(out).toBe("Basics:\n  Sam\n  Eastern time\nGoals & interests:\n  Run a marathon");
   });
 });

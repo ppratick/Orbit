@@ -77,6 +77,41 @@ public struct Memory: Codable, Identifiable, Hashable, Sendable {
     public var deletedAt: Millis?
 }
 
+/// One section of the user's "About you" profile. The user's text is authoritative.
+public struct ProfileSection: Codable, Identifiable, Hashable, Sendable {
+    public var id: String            // basics | work | people | routines | goals | context
+    public var content: String
+    public var updatedAt: Millis
+    public var updatedBy: String?
+
+    public init(id: String, content: String, updatedAt: Millis, updatedBy: String? = nil) {
+        self.id = id; self.content = content; self.updatedAt = updatedAt; self.updatedBy = updatedBy
+    }
+
+    /// The fixed set of sections, in display order, with the short question each one answers.
+    public static let catalog: [(id: String, title: String, question: String, symbol: String)] = [
+        ("basics", "Basics", "Your name, what Orbit should call you, and your time zone.", "person.fill"),
+        ("work", "School & work", "Where do you study or work, and what are you focused on?", "graduationcap.fill"),
+        ("people", "Important people", "Who comes up often — family, friends, teammates, professors?", "person.2.fill"),
+        ("routines", "Routines", "When do you usually wake up, work, exercise or wind down?", "clock.fill"),
+        ("goals", "Goals & interests", "What are you working toward, and what do you enjoy?", "star.fill"),
+        ("context", "Anything else", "Anything else Orbit should keep in mind.", "text.alignleft"),
+    ]
+    public static func title(for id: String) -> String { catalog.first { $0.id == id }?.title ?? id.capitalized }
+}
+
+/// A fact Orbit learned in conversation, waiting for the user to add it to their profile or dismiss it.
+public struct ProfileSuggestion: Codable, Identifiable, Hashable, Sendable {
+    public var id: String
+    public var section: String
+    public var content: String
+    public var source: String
+    public var sourceRef: String?
+    public var status: String        // pending | accepted | dismissed
+    public var createdAt: Millis
+    public var updatedAt: Millis
+}
+
 public struct Responsibility: Codable, Identifiable, Hashable, Sendable {
     public var id: String
     public var title: String
@@ -135,6 +170,8 @@ public struct SyncResponse: Decodable, Sendable {
         public var task: [OrbitTask]?
         public var approval: [Approval]?
         public var memory: [Memory]?
+        public var profile: [ProfileSection]?
+        public var profileSuggestion: [ProfileSuggestion]?
         public var responsibility: [Responsibility]?
         public var notification: [OrbitNotification]?
         public var activity: [Activity]?

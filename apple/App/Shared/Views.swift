@@ -33,12 +33,11 @@ struct RootView: View {
 }
 
 enum OrbitSection: String, CaseIterable, Identifiable {
-    case chat = "Orbit", activity = "Activity", memory = "Memory", settings = "Settings"
+    case chat = "Orbit", memory = "Memory", settings = "Settings"
     var id: Self { self }
     var icon: String {
         switch self {
         case .chat: return "bubble.left"
-        case .activity: return "bolt"
         case .memory: return "brain.head.profile"
         case .settings: return "gearshape"
         }
@@ -46,7 +45,6 @@ enum OrbitSection: String, CaseIterable, Identifiable {
     var selectedIcon: String {
         switch self {
         case .chat: return "bubble.left.fill"
-        case .activity: return "bolt.fill"
         case .memory: return "brain.head.profile.fill"
         case .settings: return "gearshape.fill"
         }
@@ -63,6 +61,7 @@ struct OrbitHomeView: View {
     @State private var sidebarOpenedByHover = false
     @FocusState private var composerFocused: Bool
     @State private var restoreComposerFocus = false
+    @State private var showActivity = false
     @GestureState private var swipe: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -165,6 +164,11 @@ struct OrbitHomeView: View {
             #endif
         }
         .task { await model.openMainConversation() }
+        // Presented from the root so header re-renders (glass morphing) never dismiss it.
+        .sheet(isPresented: $showActivity) {
+            ActivitySheet { model.chatJumpRequest += 1 }
+                .environmentObject(model).environmentObject(store)
+        }
         .onChange(of: swipe) { old, current in
             #if os(iOS)
             if !sidebarOpen, old <= 0, current > 0 { dismissKeyboardForSidebar() }
@@ -202,6 +206,9 @@ struct OrbitHomeView: View {
                         OrbitMenuButton { setSidebar(true) }
                     }
                 }
+                .overlay(alignment: .trailing) {
+                    if section == .chat { activityButton }
+                }
                 .padding(.horizontal, 20)
                 #if os(macOS)
                 .padding(.top, 36)
@@ -215,8 +222,10 @@ struct OrbitHomeView: View {
     @ViewBuilder private var sectionContent: some View {
         switch section {
         case .chat: PersistentChatView(composerFocused: $composerFocused)
-        case .activity: WorkView(onCompose: compose, onReviewApproval: { section = .chat })
-        case .memory: MemoryView(onTrack: { compose("Help me keep track of ") })
+        case .memory: MemoryView(onTrack: { compose("Help me keep track of ") }, onAboutYou: {
+            settingsNavigation.path = [.aboutYou]
+            section = .settings
+        })
         case .settings: SettingsView(navigation: settingsNavigation, showsHeader: false)
         }
     }
@@ -289,8 +298,8 @@ struct OrbitHomeView: View {
         case .chat:
             let n = store.pendingApprovals.count
             return n > 0 ? (n, .orange) : nil
-        case .activity:
-            let n = store.recentTasks.filter { $0.status == "queued" || $0.status == "leased" }.count
+        case .settings:
+            let n = store.pendingProfileSuggestions.count
             return n > 0 ? (n, Color.white.opacity(0.55)) : nil
         default: return nil
         }
@@ -316,7 +325,7 @@ struct OrbitHomeView: View {
                         .foregroundStyle(tint == .orange ? Color.black : Color.white)
                         .padding(.horizontal, 7).frame(minWidth: 20, minHeight: 20)
                         .background(tint == .orange ? Color.orange : Color.white.opacity(0.14), in: Capsule())
-                        .accessibilityLabel(destination == .chat ? "\(count) approvals waiting" : "\(count) tasks running")
+                        .accessibilityLabel(destination == .chat ? "\(count) approvals waiting" : "\(count) suggestions to review")
                 }
             }
             .padding(.horizontal, 12)
@@ -326,6 +335,32 @@ struct OrbitHomeView: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    /// Task status and history live one tap away from the chat instead of in a separate destination.
+    private var activityButton: some View {
+        let running = store.recentTasks.filter { $0.status == "queued" || $0.status == "leased" }.count
+        return Button { showActivity = true } label: {
+            Image(systemName: running > 0 ? "bolt.fill" : "bolt")
+                .font(.system(size: 17, weight: .medium))
+                .symbolEffect(.pulse, options: .repeating, isActive: running > 0)
+                .frame(width: 46, height: 46)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .orbitGlass(in: Circle(), interactive: true)
+        .overlay(alignment: .topTrailing) {
+            if running > 0 {
+                Text("\(running)").font(.system(size: 11, weight: .bold)).monospacedDigit()
+                    .foregroundStyle(.black).padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18)
+                    .background(.white, in: Capsule())
+                    .offset(x: 3, y: -3)
+                    .allowsHitTesting(false)
+            }
+        }
+        .accessibilityLabel(running > 0 ? "Activity, \(running) running" : "Activity")
+        .accessibilityIdentifier("orbit.activity.open")
+        .help("Activity")
     }
 
     private var openGesture: some Gesture {
@@ -477,6 +512,11 @@ struct ChatView: View {
     let conversationId: String
     @State private var selectedModel = "Auto"
     @State private var showingModelPicker = false
+    /// Follow the newest content until the reader deliberately scrolls up; resume at the bottom.
+    @State private var following = true
+    @State private var newBelow = false
+    @State private var scrollRequest = 0
+    @State private var scroll = ChatScroll()
     #if os(iOS)
     @State private var dictation = OrbitDictation()
     @State private var dictationPrefix = ""
@@ -495,7 +535,9 @@ struct ChatView: View {
                             }
                         }
                         ForEach(store.chat(conversationId)) { m in MessageBubble(message: m).id(m.id) }
-                        if model.sending.contains(conversationId) && model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        // The live reply stays visible while a follow-up is being typed, so the
+                        // conversation doesn't shrink and jump under the reader.
+                        if model.sending.contains(conversationId) {
                             VStack(alignment: .leading, spacing: 4) {
                                 if let live = model.streaming[conversationId], !live.isEmpty {
                                     MessageBubble(message: Message(id: "streaming", conversationId: conversationId, role: "assistant", content: live, meta: nil, createdAt: 0))
@@ -518,32 +560,41 @@ struct ChatView: View {
                     .frame(maxWidth: 760)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 24).padding(.vertical, 20)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(ChatScroll.space)) } action: { frame in
+                        trackScroll(frame, proxy: proxy)
+                    }
+                    Color.clear.frame(height: 1).id(ChatScroll.bottom)
                 }
+                .coordinateSpace(name: ChatScroll.space)
                 .defaultScrollAnchor(.bottom)
                 .keepsBottomOnResize()
                 .scrollDismissesKeyboard(.interactively)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    scroll.viewport = height
+                    // Keyboard, window or composer size changed: stay on the latest message if following.
+                    if following, scroll.lastHeight != nil, scroll.distance(scroll.contentMaxY) > ChatScroll.threshold { pinToBottom(proxy) }
+                }
+                .overlay(alignment: .bottom) {
+                    if newBelow {
+                        newMessagesPill { jumpToLatest(proxy) }
+                            .padding(.bottom, 10)
+                            .transition(.move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.92, anchor: .bottom)))
+                    }
+                }
+                .animation(.spring(response: 0.32, dampingFraction: 0.86), value: newBelow)
                 .onChange(of: composerFocused) { _, focused in
-                    // Opening the keyboard or growing the composer shouldn't strand the user mid-history.
-                    if focused { withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) } }
+                    // Starting to type means "take me to the conversation".
+                    if focused { jumpToLatest(proxy) }
                 }
-                .onChange(of: store.chat(conversationId).count) { _, _ in
-                    // A pending approval card sits below the newest message; keep it in view.
-                    if let id = store.pendingApprovals.first?.id {
-                        withAnimation { proxy.scrollTo("approval-" + id, anchor: .bottom) }
-                    } else {
-                        withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) }
-                    }
+                .onChange(of: model.chatDraft.isEmpty) { wasEmpty, isEmpty in
+                    if wasEmpty, !isEmpty, !following || scroll.lastDistance > ChatScroll.threshold { jumpToLatest(proxy) }
                 }
-                // Also fires when an approval's details load and the card grows, so it stays fully visible.
-                .onChange(of: store.pendingApprovals.map { "\($0.id):\($0.params == nil ? 0 : 1)" }) { _, keys in
-                    guard let id = store.pendingApprovals.first?.id, !keys.isEmpty else { return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                        withAnimation { proxy.scrollTo("approval-" + id, anchor: .bottom) }
-                    }
-                }
-                .onChange(of: model.streaming[conversationId]?.count ?? 0) { _, _ in
-                    proxy.scrollTo("typing", anchor: .bottom)
-                }
+                .onChange(of: scrollRequest) { _, _ in jumpToLatest(proxy) }
+                .onChange(of: model.chatJumpRequest) { _, _ in jumpToLatest(proxy) }
+                // Content arriving below while the reader is scrolled up: offer a way down instead of yanking them.
+                .onChange(of: store.chat(conversationId).count) { old, new in if new > old { noteNewContent() } }
+                .onChange(of: model.streaming[conversationId]?.isEmpty ?? true) { _, empty in if !empty { noteNewContent() } }
+                .onChange(of: store.pendingApprovals.map(\.id)) { old, new in if !Set(new).isSubset(of: Set(old)) { noteNewContent() } }
             }
             VStack(alignment: .leading, spacing: 8) {
                 TextField("Ask Orbit anything…", text: $model.chatDraft, axis: .vertical)
@@ -636,7 +687,7 @@ struct ChatView: View {
                     .accessibilityLabel(dictation.isRecording ? "Stop dictation" : "Dictate message")
                     .disabled(dictation.isStarting || dictation.isFinishing)
                     #endif
-                    if model.sending.contains(conversationId) {
+                    if model.sending.contains(conversationId), model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         ProgressView().controlSize(.small).frame(width: 40, height: 40)
                             .accessibilityLabel("Orbit is replying")
                     } else {
@@ -713,8 +764,85 @@ struct ChatView: View {
         let hasOverride = draft.lowercased().hasPrefix("/luna ") || draft.lowercased().hasPrefix("/sol ")
         let prefix = selectedModel == "Auto" || hasOverride ? "" : "/\(selectedModel.lowercased()) "
         model.chatDraft = ""
+        scrollRequest += 1
         Task { await model.send(prefix + draft, in: conversationId) }
     }
+
+    // MARK: Scrolling
+
+    private func trackScroll(_ frame: CGRect, proxy: ScrollViewProxy) {
+        let distance = scroll.distance(frame.maxY)
+        // Content only moves down on screen when the reader scrolls up: growth happens below,
+        // and our own scrolling moves it up. Shrinking at the bottom clamps to distance ≈ 0.
+        if let last = scroll.lastMinY, frame.minY > last + 0.5, distance > ChatScroll.threshold, following {
+            following = false
+        }
+        if distance <= ChatScroll.threshold {
+            if !following { following = true }
+            if newBelow { newBelow = false }
+        } else if following, let height = scroll.lastHeight, frame.height != height {
+            pinToBottom(proxy) // streaming text, a new message or an approval card grew the content
+        }
+        scroll.lastMinY = frame.minY
+        scroll.lastHeight = frame.height
+        scroll.contentMaxY = frame.maxY
+        scroll.lastDistance = distance
+    }
+
+    private func pinToBottom(_ proxy: ScrollViewProxy) {
+        guard !scroll.pinPending else { return }
+        scroll.pinPending = true
+        DispatchQueue.main.async {
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) { proxy.scrollTo(ChatScroll.bottom, anchor: .bottom) }
+            scroll.pinPending = false
+        }
+    }
+
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        following = true
+        newBelow = false
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.9)) { proxy.scrollTo(ChatScroll.bottom, anchor: .bottom) }
+    }
+
+    private func noteNewContent() {
+        if !following, scroll.lastDistance > ChatScroll.threshold, !newBelow { newBelow = true }
+    }
+
+    private func newMessagesPill(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text("New messages")
+                Image(systemName: "arrow.down").font(.system(size: OrbitTheme.isMac ? 11 : 12, weight: .bold))
+            }
+            .font(.system(size: OrbitTheme.isMac ? 12.5 : 14, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.95))
+            .padding(.horizontal, OrbitTheme.isMac ? 14 : 16)
+            .frame(height: OrbitTheme.isMac ? 30 : 38)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .background(Color(red: 0.12, green: 0.125, blue: 0.14).opacity(0.65), in: Capsule())
+        .orbitGlass(in: Capsule(), interactive: true)
+        .accessibilityLabel("New messages. Jump to latest")
+        .accessibilityIdentifier("orbit.chat.newMessages")
+    }
+}
+
+/// Scroll bookkeeping that changes every frame; kept out of view state so it doesn't re-render.
+final class ChatScroll {
+    static let space = "orbit.chat.scroll"
+    static let bottom = "orbit.chat.bottom"
+    static let threshold: CGFloat = 24
+    var viewport: CGFloat = 0
+    var contentMaxY: CGFloat = 0
+    var lastMinY: CGFloat?
+    var lastHeight: CGFloat?
+    var lastDistance: CGFloat = 0
+    var pinPending = false
+    /// How far the end of the content sits below the visible area (the 1-pt end marker included).
+    func distance(_ maxY: CGFloat) -> CGFloat { maxY + 1 - viewport }
 }
 
 private extension View {
@@ -880,10 +1008,41 @@ func orbitDayGroups<T>(_ items: [T], date: (T) -> Date) -> [(title: String, item
     }
 }
 
+/// Compact task status and history, opened from the chat header.
+struct ActivitySheet: View {
+    var onReviewApproval: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Activity").font(.system(size: OrbitTheme.isMac ? 14 : 17, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .trailing) {
+                    Button("Done") { dismiss() }.buttonStyle(.plain).fontWeight(.semibold)
+                        .font(OrbitTheme.body)
+                        .keyboardShortcut(.cancelAction)
+                }
+                .padding(.horizontal, OrbitTheme.isMac ? 20 : 22)
+                .padding(.top, OrbitTheme.isMac ? 16 : 20)
+                .padding(.bottom, OrbitTheme.isMac ? 6 : 8)
+            WorkView(onReviewApproval: {
+                dismiss()
+                onReviewApproval()
+            })
+        }
+        .background(Color(white: 0.06).ignoresSafeArea())
+        #if os(macOS)
+        .frame(minWidth: 480, idealWidth: 540, minHeight: 520, idealHeight: 640)
+        #endif
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+}
+
 struct WorkView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: OrbitStore
-    var onCompose: (String) -> Void
     var onReviewApproval: () -> Void
     @State private var tab = 0
     @State private var expandedError: String?
@@ -893,9 +1052,6 @@ struct WorkView: View {
     }
     private var finishedTasks: [OrbitTask] {
         store.recentTasks.filter { !["queued", "leased", "awaiting_approval"].contains($0.status) }
-    }
-    private var doneToday: Int {
-        finishedTasks.filter { $0.status == "succeeded" && Calendar.current.isDateInToday($0.updatedAt.date) }.count
     }
     private var unread: Int { store.sortedNotifications.filter { $0.readAt == nil }.count }
 
@@ -1152,10 +1308,10 @@ struct MemoryView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: OrbitStore
     var onTrack: () -> Void
-    @State private var tab = 0
+    var onAboutYou: () -> Void
+    @State private var tab = 0          // 0 preferences, 1 tracking
     @State private var query = ""
     @State private var newText = ""
-    @State private var newKind = 0      // 0 preference, 1 fact
     @State private var showAdd = false
     @State private var editing: Memory?
     @State private var editText = ""
@@ -1164,17 +1320,17 @@ struct MemoryView: View {
     private func memories(_ kind: String) -> [Memory] {
         store.liveMemories.filter { $0.kind == kind && (query.isEmpty || $0.content.localizedCaseInsensitiveContains(query)) }
     }
-    private var filteredMemories: [Memory] { memories(tab == 0 ? "preference" : "fact") }
+    private var filteredMemories: [Memory] { memories("preference") }
     private var tracked: [Responsibility] {
         store.openResponsibilities.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.notes.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {
         OrbitScreen(spacing: OrbitTheme.isMac ? 16 : 20) {
-            OrbitSegmented(titles: ["Preferences", "About you", "Tracking"], selection: $tab)
+            OrbitSegmented(titles: ["Preferences", "Tracking"], selection: $tab)
             searchField
             Group {
-                if tab == 2 { trackingList } else { memoryList }
+                if tab == 1 { trackingList } else { memoryList }
             }
             .padding(.top, 4)
             .transaction { $0.animation = nil }
@@ -1187,14 +1343,14 @@ struct MemoryView: View {
                 .padding(.horizontal, OrbitTheme.pagePadding)
         }
         .sheet(isPresented: $showAdd) {
-            MemoryEditor(title: "New memory", text: $newText, kind: $newKind, showsKind: true) {
-                let content = newText, kind = newKind == 0 ? "preference" : "fact"
+            MemoryEditor(title: "New preference", text: $newText) {
+                let content = newText
                 newText = ""; showAdd = false
-                Task { await model.perform { try await $0.addMemory(kind: kind, content: content) } }
+                Task { await model.perform { try await $0.addMemory(kind: "preference", content: content) } }
             } cancel: { showAdd = false }
         }
         .sheet(item: $editing) { memory in
-            MemoryEditor(title: "Edit memory", text: $editText, kind: .constant(0), showsKind: false) {
+            MemoryEditor(title: "Edit preference", text: $editText) {
                 let content = editText
                 editing = nil
                 Task { await model.perform { try await $0.updateMemory(id: memory.id, content: content) } }
@@ -1206,7 +1362,7 @@ struct MemoryView: View {
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").font(.system(size: OrbitTheme.isMac ? 12 : 15, weight: .medium)).foregroundStyle(.secondary)
-            TextField(tab == 2 ? "Search tracked items" : "Search memory", text: $query)
+            TextField(tab == 1 ? "Search tracked items" : "Search preferences", text: $query)
                 .textFieldStyle(.plain).font(OrbitTheme.body).focused($searchFocused)
             if !query.isEmpty {
                 Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
@@ -1222,9 +1378,9 @@ struct MemoryView: View {
 
     private var addButton: some View {
         Button {
-            if tab == 2 { onTrack() } else { newKind = tab == 0 ? 0 : 1; showAdd = true }
+            if tab == 1 { onTrack() } else { showAdd = true }
         } label: {
-            Label(tab == 2 ? "Track something" : "Add memory", systemImage: "plus")
+            Label(tab == 1 ? "Track something" : "Add preference", systemImage: "plus")
                 .font(.system(size: OrbitTheme.isMac ? 13 : 15, weight: .semibold))
                 .foregroundStyle(.black)
                 .padding(.horizontal, OrbitTheme.isMac ? 14 : 18)
@@ -1239,9 +1395,9 @@ struct MemoryView: View {
 
     @ViewBuilder private var memoryList: some View {
         if filteredMemories.isEmpty {
-            OrbitEmptyState(symbol: query.isEmpty ? (tab == 0 ? "slider.horizontal.3" : "person") : "magnifyingglass",
-                            title: query.isEmpty ? (tab == 0 ? "No preferences yet" : "Nothing saved about you") : "No matches",
-                            detail: query.isEmpty ? (tab == 0 ? "Tell Orbit how you like things done, and it will remember." : "Facts you share, like your school or routines, live here.") : "Try a different search.")
+            OrbitEmptyState(symbol: query.isEmpty ? "slider.horizontal.3" : "magnifyingglass",
+                            title: query.isEmpty ? "No preferences yet" : "No matches",
+                            detail: query.isEmpty ? "Tell Orbit how you like things done, and it will remember." : "Try a different search.")
         } else {
             OrbitGroup() {
                 ForEach(Array(filteredMemories.enumerated()), id: \.element.id) { index, memory in
@@ -1249,6 +1405,21 @@ struct MemoryView: View {
                     memoryRow(memory)
                 }
             }
+        }
+        if query.isEmpty {
+            Button(action: onAboutYou) {
+                HStack(spacing: 5) {
+                    Text("Name, school and people are in")
+                    Text("About you").fontWeight(.semibold).foregroundStyle(.primary)
+                    Image(systemName: "chevron.right").font(.system(size: OrbitTheme.isMac ? 9 : 11, weight: .semibold))
+                }
+                .font(OrbitTheme.footnote).foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.85)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
         }
     }
 
@@ -1345,8 +1516,6 @@ struct MemoryView: View {
 struct MemoryEditor: View {
     let title: String
     @Binding var text: String
-    @Binding var kind: Int
-    var showsKind: Bool
     var save: () -> Void
     var cancel: () -> Void
     @FocusState private var focused: Bool
@@ -1365,15 +1534,12 @@ struct MemoryEditor: View {
                     .keyboardShortcut(.defaultAction)
             }
             .font(OrbitTheme.body)
-            if showsKind {
-                OrbitSegmented(titles: ["Preference", "About you"], selection: $kind)
-            }
-            TextField(kind == 0 || !showsKind ? "e.g. Keep replies short and casual" : "e.g. I study CS at CMU", text: $text, axis: .vertical)
+            TextField("e.g. Keep replies short and casual", text: $text, axis: .vertical)
                 .lineLimit(4...10).textFieldStyle(.plain).font(OrbitTheme.body).focused($focused)
                 .padding(14)
                 .background(OrbitTheme.raised, in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 10 : 16, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 10 : 16, style: .continuous).stroke(OrbitTheme.hairline, lineWidth: 0.5))
-            Text("Orbit uses memories to personalize replies. You can edit or delete them any time.")
+            Text("Preferences tell Orbit how you like things done. You can edit or delete them any time.")
                 .font(OrbitTheme.footnote).foregroundStyle(.secondary)
             Spacer(minLength: 0)
         }

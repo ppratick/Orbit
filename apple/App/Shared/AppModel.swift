@@ -24,6 +24,8 @@ final class AppModel: NSObject, ObservableObject {
     @Published var streaming: [String: String] = [:]
     /// Short progress line while a turn runs ("Using remember…", model name).
     @Published var turnStatus: [String: String] = [:]
+    /// Bumped to ask the chat to jump to the latest message and resume following (e.g. "Review" in Activity).
+    @Published var chatJumpRequest = 0
 
     let store = OrbitStore()
     private(set) var api: APIClient?
@@ -304,6 +306,37 @@ final class AppModel: NSObject, ObservableObject {
         } catch {
             banner = error.localizedDescription
         }
+    }
+
+    // MARK: About you
+
+    /// Saves the user's own edit to one profile section. Returns an error message to show in the
+    /// editor (which stays open), including when another device saved a newer version first.
+    func saveProfile(section: String, content: String) async -> String? {
+        guard let api else { return "Not connected to your server." }
+        do {
+            let saved = try await api.updateProfile(section: section, content: content, baseUpdatedAt: store.profile[section]?.updatedAt)
+            store.upsert(profileSection: saved)
+            await store.sync(using: api)
+            return nil
+        } catch let e as APIError where e.status == 409 {
+            await store.sync(using: api)
+            return "This section was just changed on another device. Your text is still here — save again to replace it."
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func resolveSuggestion(_ suggestion: ProfileSuggestion, accept: Bool) async {
+        guard let api else { return }
+        store.resolveSuggestion(suggestion.id, status: accept ? "accepted" : "dismissed")
+        do {
+            if accept { try await api.acceptSuggestion(id: suggestion.id) } else { try await api.dismissSuggestion(id: suggestion.id) }
+        } catch {
+            store.resolveSuggestion(suggestion.id, status: "pending")
+            banner = error.localizedDescription
+        }
+        await store.sync(using: api)
     }
 
     func removeDevice(_ device: DeviceInfo) async {

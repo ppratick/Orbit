@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { HttpError } from "./http";
 import { newId, now, parseJson } from "./util";
+import { getProfile, PROFILE_SECTIONS } from "./profile";
 
 export interface MemoryRow {
   id: string;
@@ -184,9 +185,22 @@ const iso = (t: number | null) => (t ? new Date(t).toISOString().replace(".000Z"
 export async function exportMarkdown(env: Env, opts: { conversations?: boolean } = {}): Promise<string> {
   const out: string[] = [`# Orbit export`, ``, `Exported ${iso(now())}`, ``];
   const mems = await listMemories(env, undefined, 1000);
+  const profile = await getProfile(env);
+  out.push("## About you", "");
+  for (const s of PROFILE_SECTIONS) {
+    const text = profile.sections.find((x) => x.id === s.id)?.content.trim();
+    if (text) out.push(`### ${s.title}`, "", text, "");
+  }
+  if (profile.suggestions.length) {
+    out.push("### Suggestions awaiting review", "");
+    for (const x of profile.suggestions) out.push(`- ${x.content} _(${x.section}; suggested ${iso(x.created_at)})_`);
+    out.push("");
+  }
   for (const kind of ["preference", "fact"] as const) {
+    const rows = mems.filter((x) => x.kind === kind);
+    if (kind === "fact" && !rows.length) continue;
     out.push(`## ${kind === "preference" ? "Preferences" : "Facts"}`, "");
-    for (const m of mems.filter((x) => x.kind === kind)) out.push(`- ${m.content} _(source: ${m.source}${m.source_ref ? ` ${m.source_ref}` : ""}; updated ${iso(m.updated_at)})_`);
+    for (const m of rows) out.push(`- ${m.content} _(source: ${m.source}${m.source_ref ? ` ${m.source_ref}` : ""}; updated ${iso(m.updated_at)})_`);
     out.push("");
   }
   out.push("## Ongoing responsibilities", "");
