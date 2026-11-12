@@ -4,7 +4,7 @@ import { HttpError, json, readJson, Router, str } from "./http";
 import { authenticate, createPairingCode, redeemPairingCode, registerDevice, type Principal } from "./auth";
 import { runTurn } from "./agent/agent";
 import { addMemory, deleteMemory, exportMarkdown, listMemories, listResponsibilities, searchConversations, updateMemory, updateResponsibility, upsertResponsibility } from "./memory";
-import { cancelTask, claimDeviceTasks, completeTask, createTask, decideApproval, extendLease, recoverExpired, type TaskRow } from "./tasks";
+import { cancelTask, claimDeviceTasks, completeTask, createTask, decideApproval, extendLease, FOLLOW_UP_ACTIONS, recoverExpired, type TaskRow } from "./tasks";
 import { ACTIONS } from "./policy";
 import { sync } from "./sync";
 import { heartbeat, PHASES, type Phase } from "./heartbeat";
@@ -268,7 +268,7 @@ router.on("POST", "/v1/device/tasks/:id/complete", async (r, p, c) => {
     b.ok ? { ok: true, result: b.result ?? null } : { ok: false, error: str(b.error, "error", { optional: true }) || "Device reported failure", retryable: b.retryable },
   );
   // Results of read-type device work go back into the conversation so Orbit can continue.
-  if (b.ok && task.conversation_id && ["mac.search_files", "mac.read_file", "mac.run_script"].includes(task.action)) {
+  if (b.ok && task.conversation_id && FOLLOW_UP_ACTIONS.includes(task.action)) {
     const followUp = runTurn(
       c.env,
       task.conversation_id,

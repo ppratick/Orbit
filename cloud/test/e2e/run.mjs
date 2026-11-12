@@ -194,6 +194,10 @@ try {
     assert.equal(dup.status, 409, "double completion rejected");
     const n = (await api("/v1/notifications")).body.notifications;
     assert.ok(n.some((x) => x.category === "task_done" && x.ref_id === a[0].id));
+    const msgs = (await api(`/v1/conversations/${conv}/messages`, { token: phone })).body.messages;
+    const posted = msgs.find((m) => m.meta?.kind === "task_result" && m.meta.task_id === a[0].id);
+    assert.ok(posted, "device result is posted to the conversation");
+    assert.match(posted.content, /^Added \u201cDentist\u201d to your Orbit calendar for .+ on your Mac\.$/);
   });
   let approvalId;
   await step("non-Orbit calendar requires approval; devices cannot claim it before approval", async () => {
@@ -286,6 +290,24 @@ try {
   });
   await step("Apple calendar snapshot upload is visible to the model tool", async () => {
     await api("/v1/device/context", { method: "PUT", token: mac, body: { kind: "calendar", items: [{ id: "E1", title: "Lecture", start: "2026-11-12T10:00:00-05:00" }] } });
+  });
+  await step("completing a reminder needs approval, runs only on the device that reported it, and posts to chat", async () => {
+    await api("/v1/devices/me", { method: "PUT", token: mac, body: { capabilities: ["calendar.create_event", "calendar.update_event", "reminders.create", "reminders.complete", "mac.read_file"] } });
+    await api("/v1/devices/me", { method: "PUT", token: phone, body: { capabilities: ["calendar.create_event", "reminders.create", "reminders.complete"] } });
+    await api("/v1/device/context", { method: "PUT", token: phone, body: { kind: "reminders", items: [{ id: "R7", title: "Orbit test reminder", list: "Reminders", due: null }] } });
+    const unknown = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "mark R404 done", client_msg_id: "c-r0" } });
+    assert.match(unknown.body.messages[1].content, /isn't in the latest synced snapshot/);
+    const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "mark R7 done", client_msg_id: "c-r1" } });
+    assert.match(r.body.messages[1].content, /NOT DONE YET/);
+    const ap = (await api("/v1/approvals", { token: mac })).body.approvals.find((a) => a.action === "reminders.complete");
+    assert.equal(ap.summary, 'Changing an existing reminder: Mark reminder "Orbit test reminder" complete');
+    await api(`/v1/approvals/${ap.id}/approve`, { method: "POST", token: mac });
+    assert.equal((await api("/v1/device/tasks/claim", { method: "POST", token: mac, body: {} })).body.tasks.filter((t) => t.action === "reminders.complete").length, 0, "Mac cannot run an edit of the iPhone's item");
+    const t = (await api("/v1/device/tasks/claim", { method: "POST", token: phone, body: {} })).body.tasks.find((x) => x.action === "reminders.complete");
+    assert.equal(t.params.reminder_id, "R7");
+    await api(`/v1/device/tasks/${t.id}/complete`, { method: "POST", token: phone, body: { lease_token: t.lease_token, ok: true, result: { completed: true } } });
+    const msgs = (await api(`/v1/conversations/${conv}/messages`, { token: mac })).body.messages;
+    assert.equal(msgs.at(-1).content, "Marked \u201cOrbit test reminder\u201d complete on your iPhone.");
   });
   await step("heartbeat via cron trigger records a run", async () => {
     const r = await fetch(`${BASE}/__scheduled?cron=*/10+*+*+*+*`);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJson, sha256Hex } from "../../src/util";
-import { ACTIONS, targetMatchesDevice } from "../../src/policy";
+import { ACTIONS, deviceMayRun, targetMatchesDevice } from "../../src/policy";
+import { outcomeText } from "../../src/tasks";
 import { decodeWords, extractText } from "../../src/connectors/mime";
 import { buildMime, validateRecipients } from "../../src/connectors/mail";
 import { untrusted, htmlToText } from "../../src/untrusted";
@@ -22,7 +23,7 @@ describe("policy (enforced outside the model)", () => {
     expect(ACTIONS["mac.read_file"].approval({ path: "/x" }, ctx)).toBeNull();
   });
   it("requires approval for sends, edits, deletes, submissions, merges and arbitrary commands", () => {
-    for (const a of ["email.send", "email.send_draft", "calendar.update_event", "calendar.delete_event", "canvas.submit", "github.merge_pr", "github.comment", "memory.delete", "shortcuts.run"]) {
+    for (const a of ["email.send", "email.send_draft", "calendar.update_event", "calendar.delete_event", "reminders.update", "reminders.complete", "reminders.delete", "canvas.submit", "github.merge_pr", "github.comment", "memory.delete", "shortcuts.run"]) {
       expect(ACTIONS[a].approval({}, ctx), a).not.toBeNull();
     }
     expect(ACTIONS["calendar.create_event"].approval({ calendar: "Work" }, ctx)).not.toBeNull();
@@ -34,6 +35,32 @@ describe("policy (enforced outside the model)", () => {
   it("never auto-retries non-idempotent sends", () => {
     expect(ACTIONS["email.send"].retrySafe).toBe(false);
     expect(ACTIONS["github.comment"].retrySafe).toBe(false);
+  });
+  it("pins edits of an existing Apple item to the device that reported it", () => {
+    expect(deviceMayRun("apple", "iphone", "dev_a", { title: "new" })).toBe(true);
+    expect(deviceMayRun("apple", "mac", "dev_b", { title: "new" })).toBe(true);
+    expect(deviceMayRun("apple", "iphone", "dev_a", { reminder_id: "R1", device_id: "dev_a" })).toBe(true);
+    expect(deviceMayRun("apple", "mac", "dev_b", { reminder_id: "R1", device_id: "dev_a" })).toBe(false);
+    expect(deviceMayRun("mac", "iphone", "dev_a", {})).toBe(false);
+  });
+  it("names the item, not its id, in approval summaries", () => {
+    expect(ACTIONS["reminders.complete"].summarize({ reminder_id: "X1", title: "Buy milk" })).toBe('Mark reminder "Buy milk" complete');
+    expect(ACTIONS["calendar.update_event"].summarize({ event_id: "E1", title: "Sync", changes: { start: "2026-11-13T10:00:00-05:00", notes: undefined } })).toBe(
+      'Change event "Sync": start → 2026-11-13T10:00:00-05:00',
+    );
+  });
+  it("describes finished device work as one plain sentence in local time", () => {
+    const env = { ORBIT_TIMEZONE: "America/New_York" } as Env;
+    const task = (action: string, params: unknown) => ({ action, params: JSON.stringify(params), summary: "s" });
+    expect(outcomeText(env, task("reminders.create", { title: "Buy milk", due: "2026-11-13T22:00:00Z" }), "your iPhone", { ok: true })).toBe(
+      "Added the reminder \u201cBuy milk\u201d, due Fri, Nov 13, 5:00 PM on your iPhone.",
+    );
+    expect(outcomeText(env, task("calendar.update_event", { title: "Sync", changes: { start: "2026-11-13T15:00:00Z" } }), "your Mac", { ok: true })).toBe(
+      "Updated \u201cSync\u201d on your Mac: moved it to Fri, Nov 13, 10:00 AM.",
+    );
+    expect(outcomeText(env, task("reminders.complete", { title: "Buy milk" }), "", { ok: false, error: "Reminder not found on this device" })).toBe(
+      "I couldn\u2019t finish this: s. Reminder not found on this device",
+    );
   });
   it("routes targets to device kinds", () => {
     expect(targetMatchesDevice("apple", "iphone")).toBe(true);

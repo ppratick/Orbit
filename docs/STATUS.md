@@ -7,8 +7,8 @@ Orbit is deployed on Cloudflare Workers Free at `https://orbit.mmkjp6pw26.worker
 - **Blocked / not built.**
 
 Tests as of this update:
-- `npm test`: 32 unit tests
-- `npm run test:e2e`: 34 end-to-end checks against `wrangler dev`
+- `npm test`: 35 unit tests
+- `npm run test:e2e`: 35 end-to-end checks against `wrangler dev`
 - OrbitKit: 12 Swift tests
 
 ## Verified live
@@ -26,8 +26,21 @@ Tests as of this update:
 | GitHub | Open issues and PRs involving you (fallback, since the notifications inbox rejects fine-grained tokens); repository README read. Private repos need to be added to the token. |
 | Dates | Tool results carry local times, so replies say "Fri, Nov 13, 11:59 PM" instead of ISO timestamps |
 | iPhone Simulator | Pairing, sync of the shared conversation, chat, every integration above, chat stays pinned to the newest message while typing |
+| Reminders | Created, read, renamed and rescheduled, completed and deleted, in iCloud Reminders on the Mac, with labeled test items that were then removed; each result was confirmed in Reminders.app |
+| Calendar | Event created on the Orbit calendar, read back, moved with its location changed, and deleted (on the iPhone Simulator's store) |
+| Approvals | Each update, complete and delete waited for approval, and was approved from either device: iPhone cards for Mac work and Mac cards for iPhone work |
+| Device hand-offs | iPhone → Mac and Mac → iPhone in both directions. Edits run only on the device that reported the item, and every result posts back to the shared chat on both devices ("…on your Mac") |
 
-Fixed during this round of testing:
+Fixed during the Calendar/Reminders round:
+- **Missing tools:** the model had no way to complete, update or delete a reminder, or to delete an event. Added `update_reminder`, `complete_reminder`, `delete_reminder` and `delete_calendar_event`, all approval-gated.
+- **Wrong-device edits:** EventKit ids are device-local, but an edit could be claimed by any Apple device. The server now finds which device reported the id and pins the task to that device.
+- **Reading the wrong snapshot:** the read tool returned only the newest snapshot of each kind, so the Simulator's empty calendar could hide the Mac's. It now returns every device's snapshot, labeled by device.
+- **Stale reads after a change:** devices waited up to 15 minutes to re-upload. They now re-upload right after running a task, and the sending device runs queued work immediately.
+- **Results never reached chat:** device results only raised a notification. They now post a plain sentence to the conversation.
+- **Ordering:** a fast device could post its result before Orbit's own reply was stored. That turn's messages are now ordered before the result.
+- **Approval card:** it showed raw JSON, internal ids and ISO times, and a message scroll could hide it. It now lists readable fields in local time, and the chat keeps the card in view.
+
+Fixed during the integrations round:
 - **Simulator pairing:** pairing failed with "network connection lost" because the HTTP/3 (QUIC) connection dropped. The apps now switch to TCP after such a failure, and they never resend a POST automatically, because the first attempt may already have used the single-use code.
 - **GitHub:** the issue-search queries were missing `is:issue` / `is:pull-request` (GitHub now returns 422 without them). The private-repo 404 message now explains token scope.
 - **Drive:** an empty query now returns the most recently modified files.
@@ -38,9 +51,10 @@ Fixed during this round of testing:
 
 | Item | Notes |
 |---|---|
-| Calendar / Reminders actions | EventKit executors and Orbit-calendar policy are covered by tests; live device runs and Mac↔iPhone hand-offs are next |
+| Calendar edits in iCloud | Calendar edits were exercised on the Simulator's local store; reminders went through the Mac's iCloud. The executor code is shared, but a Mac-side event edit wasn't run, to avoid touching your real calendars beyond the Orbit calendar |
+| Physical iPhone | The paired iPhone runs an older build that lacks the new reminder actions. Reinstall from Xcode to pick them up |
 | Approval-gated sends | Gmail send, GitHub comment/merge and Canvas submit are gated and unit-tested; deliberately not exercised (no test emails) |
-| Mac UI | Builds cleanly; this round tested on the iPhone Simulator only |
+| Mac UI | Chat, approvals and hand-offs were exercised in this round; the remaining screens weren't walked through |
 | Closed-app iPhone notifications | Not built yet; see SETUP.md §6 |
 | OpenAI policy for a Worker host | Works technically; OpenAI documents plan usage for open-source and self-hosted apps, and a Worker on your own account isn't explicitly covered |
 

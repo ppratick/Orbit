@@ -1,10 +1,12 @@
 import type { Env } from "./env";
 import { HttpError } from "./http";
 import { logActivity } from "./db";
-import { getAction, targetMatchesDevice, type Target } from "./policy";
+import { deviceMayRun, getAction, type Target } from "./policy";
 import { notify } from "./notify";
 import { canonicalJson, newId, now, parseJson, randomToken, sha256Hex, truncate } from "./util";
 import { runCloudAction } from "./executors";
+import { localTime } from "./localtime";
+import { toPlainText } from "./plaintext";
 
 export interface TaskRow {
   id: string;
@@ -66,7 +68,11 @@ export async function createTask(env: Env, ctx: ExecutionContext | null, input: 
   const needsApproval = reason !== null && !input.confirmedByDevice;
   const id = newId("task");
   const t = now();
-  const summary = truncate(spec.summarize(input.params), 300);
+  // Approval cards and notifications show times in the user's zone, not raw ISO strings.
+  const summary = truncate(
+    spec.summarize(input.params).replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})/g, (m) => localTime(env, m) ?? m),
+    300,
+  );
   const stmts: D1PreparedStatement[] = [];
   let approvalId: string | null = null;
 
@@ -252,6 +258,7 @@ export async function completeTask(
       ).bind(truncate(JSON.stringify(outcome.result ?? null), 20000), t, t, taskId, leaseToken),
     ]);
     await logActivity(env, `task.succeeded`, task.summary, { action: task.action }, taskId);
+    await postOutcomeToChat(env, task, { ok: true, result: outcome.result });
     await notify(env, {
       title: "Done",
       body: task.summary,
@@ -271,6 +278,7 @@ export async function completeTask(
     ]);
     if (!canRetry) {
       await logActivity(env, "task.failed", task.summary, { action: task.action, error: outcome.error }, taskId);
+      await postOutcomeToChat(env, task, { ok: false, error: outcome.error });
       await notify(env, {
         title: "Task failed",
         body: `${task.summary} — ${truncate(outcome.error, 200)}`,
@@ -299,7 +307,7 @@ export async function claimDeviceTasks(
   const out: (TaskRow & { lease_token: string })[] = [];
   for (const task of candidates.results) {
     if (out.length >= limit) break;
-    if (!targetMatchesDevice(task.target, device.kind)) continue;
+    if (!deviceMayRun(task.target, device.kind, device.id, parseJson(task.params, {}))) continue;
     // Device must advertise the capability (e.g. "calendar.create_event") to receive the task.
     if (!device.capabilities.includes(task.action)) continue;
     try {
@@ -399,5 +407,61 @@ export async function cancelTask(env: Env, taskId: string) {
   if (!r.meta.changes) throw new HttpError(409, "Only queued or awaiting tasks can be cancelled", "conflict");
   await env.DB.batch([
     env.DB.prepare("UPDATE approvals SET status = 'denied', decided_at = ? WHERE task_id = ? AND status = 'pending'").bind(now(), taskId),
+  ]);
+}
+
+/** Device actions whose results start a follow-up model turn instead (see routes.ts). */
+export const FOLLOW_UP_ACTIONS = ["mac.search_files", "mac.read_file", "mac.run_script"];
+
+/** One plain sentence describing what a finished device task did, in the user's time zone. */
+export function outcomeText(env: Env, task: Pick<TaskRow, "action" | "params" | "summary">, deviceName: string, outcome: { ok: true } | { ok: false; error: string }): string {
+  const p = parseJson<Record<string, unknown>>(task.params, {});
+  const c = (p.changes ?? {}) as Record<string, unknown>;
+  const q = (v: unknown) => `\u201c${typeof v === "string" ? v : ""}\u201d`;
+  const when = (v: unknown) => localTime(env, typeof v === "string" ? v : null);
+  const on = deviceName ? ` on ${deviceName}` : "";
+  if (!outcome.ok) return toPlainText(`I couldn\u2019t finish this${on}: ${task.summary}. ${truncate(outcome.error, 300)}`);
+  const changed = () =>
+    [c.title ? `renamed it ${q(c.title)}` : "", c.start ? `moved it to ${when(c.start)}` : "", c.due ? `set it due ${when(c.due)}` : "", c.end && !c.start ? `set it to end ${when(c.end)}` : "", c.location ? `set the location to ${c.location}` : "", c.notes ? "updated the notes" : ""]
+      .filter(Boolean)
+      .join(", ") || "saved your changes";
+  switch (task.action) {
+    case "calendar.create_event":
+      return `Added ${q(p.title)} to your ${typeof p.calendar === "string" && p.calendar ? p.calendar : "Orbit"} calendar for ${when(p.start) ?? p.start}${on}.`;
+    case "calendar.update_event":
+      return `Updated ${q(p.title)}${on}: ${changed()}.`;
+    case "calendar.delete_event":
+      return `Deleted the event ${q(p.title)}${on}.`;
+    case "reminders.create":
+      return `Added the reminder ${q(p.title)}${p.due ? `, due ${when(p.due)}` : ""}${on}.`;
+    case "reminders.update":
+      return `Updated the reminder ${q(p.title)}${on}: ${changed()}.`;
+    case "reminders.complete":
+      return `Marked ${q(p.title)} complete${on}.`;
+    case "reminders.delete":
+      return `Deleted the reminder ${q(p.title)}${on}.`;
+    default:
+      return toPlainText(`Done${on}: ${task.summary}.`);
+  }
+}
+
+/** Device results land in the conversation that asked for them, so every synced device sees the outcome. */
+async function postOutcomeToChat(env: Env, task: TaskRow, outcome: { ok: true; result: unknown } | { ok: false; error: string }) {
+  if (!task.conversation_id || task.target === "cloud" || FOLLOW_UP_ACTIONS.includes(task.action)) return;
+  const dev = task.lease_device_id
+    ? await env.DB.prepare("SELECT name, kind FROM devices WHERE id = ?").bind(task.lease_device_id).first<{ name: string; kind: string }>()
+    : null;
+  const deviceName = dev ? (dev.kind === "mac" ? "your Mac" : dev.kind === "iphone" ? "your iPhone" : dev.name) : "";
+  const text = outcomeText(env, task, deviceName, outcome);
+  const t = now();
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO messages (id, conversation_id, role, content, meta, created_at) VALUES (?, ?, 'assistant', ?, ?, ?)").bind(
+      newId("msg"),
+      task.conversation_id,
+      text,
+      JSON.stringify({ kind: "task_result", task_id: task.id, ok: outcome.ok, device_id: task.lease_device_id }),
+      t,
+    ),
+    env.DB.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").bind(t, task.conversation_id),
   ]);
 }

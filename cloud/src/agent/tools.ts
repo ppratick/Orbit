@@ -10,6 +10,7 @@ import { canvasApi } from "../connectors/canvas";
 import { readWebPage } from "../connectors/browser";
 import { untrusted } from "../untrusted";
 import { parseJson, truncate } from "../util";
+import { localTime } from "../localtime";
 
 export interface ToolCtx {
   env: Env;
@@ -39,13 +40,7 @@ const hasMail = (t: ToolCtx) => [...t.providers].some((p) => MAIL_PROVIDERS[p]);
 const hasDevice = (...kinds: string[]) => (t: ToolCtx) => kinds.some((k) => t.deviceKinds.has(k));
 const out = (v: unknown) => truncate(JSON.stringify(v, null, 1), 14000);
 
-/** Human-readable local time for tool results, so replies never need to convert UTC/epoch timestamps. */
-export function localTime(env: Env, v: string | number | null | undefined): string | null {
-  if (v === null || v === undefined || v === "") return null;
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return null;
-  return new Intl.DateTimeFormat("en-US", { timeZone: env.ORBIT_TIMEZONE, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(d);
-}
+export { localTime };
 
 function parseTime(v: string, field: string): number | null {
   if (!v) return null;
@@ -53,6 +48,38 @@ function parseTime(v: string, field: string): number | null {
   if (Number.isNaN(t)) throw new Error(`${field} must be an ISO-8601 date-time with a UTC offset`);
   return t;
 }
+
+interface Snapshot {
+  device_id: string;
+  device_name: string;
+  kind: string;
+  captured_at: number;
+  items: Record<string, unknown>[];
+}
+
+/** Latest calendar/reminders snapshot from each active device, newest first. */
+export async function deviceSnapshots(env: Env, kind?: string): Promise<Snapshot[]> {
+  const r = await env.DB.prepare(
+    `SELECT c.device_id, d.name AS device_name, c.kind, c.payload, c.captured_at FROM device_context c
+     JOIN devices d ON d.id = c.device_id WHERE d.revoked_at IS NULL ${kind ? "AND c.kind = ?" : ""} ORDER BY c.captured_at DESC`,
+  )
+    .bind(...(kind ? [kind] : []))
+    .all<{ device_id: string; device_name: string; kind: string; payload: string; captured_at: number }>();
+  return r.results.map((x) => ({ ...x, items: parseJson<Record<string, unknown>[]>(x.payload, []) }));
+}
+
+/** Find which device reported an EventKit id (ids are device-local), so the edit is routed to that device. */
+export async function locateItem(env: Env, kind: "calendar" | "reminders", id: string): Promise<{ id: string; device_id: string; title: string } | null> {
+  if (!id) return null;
+  for (const snap of await deviceSnapshots(env, kind)) {
+    const hit = snap.items.find((i) => i.id === id);
+    if (hit) return { id, device_id: snap.device_id, title: typeof hit.title === "string" ? hit.title : "" };
+  }
+  return null;
+}
+
+const unknownId = (what: string) =>
+  `That ${what} id isn't in the latest synced snapshot. Call apple_calendar_and_reminders again and use an id from there (new items appear once the device that created them syncs).`;
 
 /** Route a side-effecting action through the policy engine. The model never decides approval. */
 async function act(t: ToolCtx, action: string, params: Args): Promise<string> {
@@ -72,7 +99,7 @@ async function act(t: ToolCtx, action: string, params: Args): Promise<string> {
   }>())!;
   switch (task.status) {
     case "awaiting_approval":
-      return `NOT DONE YET — approval requested from the user (task ${r.task.id}, reason: ${r.approvalReason ?? "requires approval"}). Tell the user it is waiting in Approvals. Do not claim it happened.`;
+      return `NOT DONE YET — approval requested from the user (task ${r.task.id}, reason: ${r.approvalReason ?? "requires approval"}). Tell the user it is waiting in Approvals; once approved, the result is posted in this chat. Do not claim it happened.`;
     case "succeeded":
       return `Done (task ${r.task.id}). Result: ${truncate(task.result ?? "", 2000)}`;
     case "failed":
@@ -81,7 +108,7 @@ async function act(t: ToolCtx, action: string, params: Args): Promise<string> {
     case "leased":
       return task.target === "cloud"
         ? `Queued (task ${r.task.id}); it will retry shortly. Last error: ${task.error ?? "none"}`
-        : `Queued for ${task.target === "apple" ? "your Mac or iPhone" : `your ${task.target}`} (task ${r.task.id}). It runs when that device is online; the user is notified when it finishes.`;
+        : `Queued for ${typeof params.device_id === "string" ? "the device that has this item" : task.target === "apple" ? "your Mac or iPhone" : `your ${task.target}`} (task ${r.task.id}). It runs when that device is online and the result is posted in this chat automatically, so just say it's on its way. Do not claim it is done.`;
     default:
       return `Task ${r.task.id} is ${task.status}.`;
   }
@@ -232,15 +259,24 @@ const TOOLS: Tool[] = [
   // ── Apple Calendar & Reminders (via Mac/iPhone EventKit) ─────────────────
   {
     name: "apple_calendar_and_reminders",
-    description: "Read the latest Apple Calendar events (next 14 days) and incomplete Reminders, as last synced by the user's Mac/iPhone.",
+    description:
+      "Read Apple Calendar events (next 14 days) and incomplete Reminders, as last synced by each of the user's devices. Use the ids from here for updates; they belong to the device that reported them.",
     properties: {},
     available: hasDevice("mac", "iphone"),
     run: async (t) => {
-      const r = await t.env.DB.prepare("SELECT kind, payload, captured_at FROM device_context ORDER BY captured_at DESC").all<{ kind: string; payload: string; captured_at: number }>();
-      if (!r.results.length) return "No calendar/reminder snapshot has been synced yet; open Orbit on the Mac or iPhone and grant Calendar/Reminders access.";
-      const seen = new Set<string>();
-      const parts = r.results.filter((x) => (seen.has(x.kind) ? false : (seen.add(x.kind), true)));
-      return untrusted("apple-pim", out(parts.map((p) => ({ kind: p.kind, synced_at: new Date(p.captured_at).toISOString(), items: parseJson(p.payload, []) }))));
+      const snaps = await deviceSnapshots(t.env);
+      if (!snaps.length) return "No calendar/reminder snapshot has been synced yet; open Orbit on the Mac or iPhone and grant Calendar/Reminders access.";
+      return untrusted(
+        "apple-pim",
+        out(
+          snaps.map((p) => ({
+            device: p.device_name,
+            kind: p.kind,
+            synced_local: localTime(t.env, p.captured_at),
+            items: p.items.map((i) => ({ ...i, start_local: localTime(t.env, i.start as string), due_local: localTime(t.env, i.due as string) })),
+          })),
+        ),
+      );
     },
   },
   {
@@ -257,12 +293,29 @@ const TOOLS: Tool[] = [
   },
   {
     name: "update_calendar_event",
-    description: "Change or move an existing calendar event (requires approval).",
+    description: "Change or move an existing calendar event (requires approval). Only pass the fields that change.",
     properties: { event_id: S("Event id from apple_calendar_and_reminders"), title: S("New title"), start: S("ISO-8601"), end: S("ISO-8601"), location: S(""), notes: S("") },
     required: ["event_id"],
     available: hasDevice("mac", "iphone"),
-    run: (t, a) =>
-      act(t, "calendar.update_event", { event_id: str(a, "event_id"), changes: { title: str(a, "title") || undefined, start: str(a, "start") || undefined, end: str(a, "end") || undefined, location: str(a, "location") || undefined, notes: str(a, "notes") || undefined } }),
+    run: async (t, a) => {
+      for (const k of ["start", "end"]) parseTime(str(a, k), k);
+      const item = await locateItem(t.env, "calendar", str(a, "event_id"));
+      if (!item) return unknownId("event");
+      const changes = { title: str(a, "title") || undefined, start: str(a, "start") || undefined, end: str(a, "end") || undefined, location: str(a, "location") || undefined, notes: str(a, "notes") || undefined };
+      return act(t, "calendar.update_event", { event_id: item.id, device_id: item.device_id, title: item.title, changes });
+    },
+  },
+  {
+    name: "delete_calendar_event",
+    description: "Delete an existing calendar event (requires approval).",
+    properties: { event_id: S("Event id from apple_calendar_and_reminders") },
+    required: ["event_id"],
+    available: hasDevice("mac", "iphone"),
+    run: async (t, a) => {
+      const item = await locateItem(t.env, "calendar", str(a, "event_id"));
+      if (!item) return unknownId("event");
+      return act(t, "calendar.delete_event", { event_id: item.id, device_id: item.device_id, title: item.title });
+    },
   },
   {
     name: "create_reminder",
@@ -270,7 +323,48 @@ const TOOLS: Tool[] = [
     properties: { title: S("Title"), due: S("ISO-8601 with offset, optional"), notes: S("Optional"), list: S("Reminders list name, optional") },
     required: ["title"],
     available: hasDevice("mac", "iphone"),
-    run: (t, a) => act(t, "reminders.create", { title: str(a, "title"), due: str(a, "due"), notes: str(a, "notes"), list: str(a, "list") }),
+    run: (t, a) => {
+      parseTime(str(a, "due"), "due");
+      return act(t, "reminders.create", { title: str(a, "title"), due: str(a, "due"), notes: str(a, "notes"), list: str(a, "list") });
+    },
+  },
+  {
+    name: "update_reminder",
+    description: "Change an existing reminder's title, due date or notes (requires approval). Only pass the fields that change.",
+    properties: { reminder_id: S("Reminder id from apple_calendar_and_reminders"), title: S("New title"), due: S("ISO-8601 with offset"), notes: S("") },
+    required: ["reminder_id"],
+    available: hasDevice("mac", "iphone"),
+    run: async (t, a) => {
+      parseTime(str(a, "due"), "due");
+      const item = await locateItem(t.env, "reminders", str(a, "reminder_id"));
+      if (!item) return unknownId("reminder");
+      const changes = { title: str(a, "title") || undefined, due: str(a, "due") || undefined, notes: str(a, "notes") || undefined };
+      return act(t, "reminders.update", { reminder_id: item.id, device_id: item.device_id, title: item.title, changes });
+    },
+  },
+  {
+    name: "complete_reminder",
+    description: "Mark an existing reminder as done (requires approval).",
+    properties: { reminder_id: S("Reminder id from apple_calendar_and_reminders") },
+    required: ["reminder_id"],
+    available: hasDevice("mac", "iphone"),
+    run: async (t, a) => {
+      const item = await locateItem(t.env, "reminders", str(a, "reminder_id"));
+      if (!item) return unknownId("reminder");
+      return act(t, "reminders.complete", { reminder_id: item.id, device_id: item.device_id, title: item.title });
+    },
+  },
+  {
+    name: "delete_reminder",
+    description: "Delete an existing reminder (requires approval).",
+    properties: { reminder_id: S("Reminder id from apple_calendar_and_reminders") },
+    required: ["reminder_id"],
+    available: hasDevice("mac", "iphone"),
+    run: async (t, a) => {
+      const item = await locateItem(t.env, "reminders", str(a, "reminder_id"));
+      if (!item) return unknownId("reminder");
+      return act(t, "reminders.delete", { reminder_id: item.id, device_id: item.device_id, title: item.title });
+    },
   },
   {
     name: "run_shortcut",

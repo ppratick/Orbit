@@ -438,7 +438,12 @@ struct ChatView: View {
                     if focused { withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) } }
                 }
                 .onChange(of: store.chat(conversationId).count) { _, _ in
-                    withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) }
+                    // A pending approval card sits below the newest message; keep it in view.
+                    if let id = store.pendingApprovals.first?.id {
+                        withAnimation { proxy.scrollTo("approval-" + id, anchor: .bottom) }
+                    } else {
+                        withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) }
+                    }
                 }
                 .onChange(of: store.pendingApprovals.map(\.id)) { _, ids in
                     if let id = ids.first { withAnimation { proxy.scrollTo("approval-" + id, anchor: .bottom) } }
@@ -665,10 +670,10 @@ struct ChatApprovalCard: View {
                 .font(.caption.weight(.semibold)).foregroundStyle(.orange)
             Text(approval.summary).font(.headline)
             if case .object(let params)? = approval.params {
-                ForEach(params.keys.sorted(), id: \.self) { key in
+                ForEach(Self.rows(params), id: \.label) { row in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(key.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption).foregroundStyle(.secondary)
-                        Text(params[key]?.display ?? "").font(.callout).textSelection(.enabled)
+                        Text(row.label).font(.caption).foregroundStyle(.secondary)
+                        Text(row.value).font(.callout).textSelection(.enabled)
                     }
                 }
                 HStack(spacing: 12) {
@@ -682,6 +687,26 @@ struct ChatApprovalCard: View {
             }
             Text("Expires \(approval.expiresAt.date, style: .relative)").font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    /// The parameters a person needs to judge the action: internal ids are hidden, edits are listed
+    /// field by field ("New due"), and timestamps are shown in local time.
+    static func rows(_ params: [String: JSONValue]) -> [(label: String, value: String)] {
+        func label(_ k: String) -> String { k.replacingOccurrences(of: "_", with: " ").capitalized }
+        func value(_ v: JSONValue) -> String {
+            if let s = v.string, s.count >= 20, let d = ISO.parse(s) { return d.formatted(date: .abbreviated, time: .shortened) }
+            return v.display
+        }
+        var out: [(label: String, value: String)] = []
+        for key in params.keys.sorted() where key != "device_id" && !key.hasSuffix("_id") {
+            guard let v = params[key] else { continue }
+            if key == "changes", case .object(let changes) = v {
+                for ck in changes.keys.sorted() { if let cv = changes[ck] { out.append(("New " + label(ck).lowercased(), value(cv))) } }
+            } else {
+                out.append((key == "title" && params["changes"] != nil ? "Current title" : label(key), value(v)))
+            }
+        }
+        return out
     }
 
     private func decide(_ approve: Bool) {

@@ -9,7 +9,7 @@ import EventKit
 /// Idempotency: every item Orbit creates carries `orbit://task/<task id>` in its URL; before creating,
 /// we look for an existing item with that marker so a retried task never duplicates.
 public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
-    public let actions = ["calendar.create_event", "calendar.update_event", "calendar.delete_event", "reminders.create", "reminders.complete"]
+    public let actions = ["calendar.create_event", "calendar.update_event", "calendar.delete_event", "reminders.create", "reminders.update", "reminders.complete", "reminders.delete"]
     private let store = EKEventStore()
     private let orbitCalendarName: String
 
@@ -35,7 +35,9 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
         case "calendar.update_event": return try updateEvent(p)
         case "calendar.delete_event": return try deleteEvent(p)
         case "reminders.create": return try await createReminder(task, p)
-        case "reminders.complete": return try await completeReminder(p)
+        case "reminders.update": return try updateReminder(p)
+        case "reminders.complete": return try completeReminder(p)
+        case "reminders.delete": return try deleteReminder(p)
         default: throw ExecutorError("Unsupported action \(task.action)")
         }
     }
@@ -95,7 +97,7 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
 
     private func updateEvent(_ p: JSONValue) throws -> JSONValue {
         try requireEvents()
-        guard let id = p["event_id"]?.string, let e = store.event(withIdentifier: id) else { throw ExecutorError("Event not found") }
+        guard let id = p["event_id"]?.string, let e = store.event(withIdentifier: id) else { throw ExecutorError("Event not found on this device") }
         let c = p["changes"] ?? .object([:])
         if let t = c["title"]?.string { e.title = t }
         if let s = ISO.parse(c["start"]?.string) {
@@ -141,22 +143,48 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
         r.notes = p["notes"]?.string
         r.calendar = target
         r.url = marker(task)
-        if let due = ISO.parse(p["due"]?.string) {
-            r.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .timeZone], from: due)
-            r.addAlarm(EKAlarm(absoluteDate: due))
-        }
+        if let due = ISO.parse(p["due"]?.string) { setDue(r, due) }
         try store.save(r, commit: true)
         return .object(["reminder_id": .string(r.calendarItemIdentifier), "list": .string(target.title)])
     }
 
-    private func completeReminder(_ p: JSONValue) async throws -> JSONValue {
+    private func reminder(_ p: JSONValue) throws -> EKReminder {
         try requireReminders()
-        guard let id = p["reminder_id"]?.string, let r = store.calendarItem(withIdentifier: id) as? EKReminder else { throw ExecutorError("Reminder not found") }
+        guard let id = p["reminder_id"]?.string, let r = store.calendarItem(withIdentifier: id) as? EKReminder else { throw ExecutorError("Reminder not found on this device") }
+        return r
+    }
+
+    private func setDue(_ r: EKReminder, _ due: Date) {
+        r.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .timeZone], from: due)
+        r.alarms?.forEach { r.removeAlarm($0) }
+        r.addAlarm(EKAlarm(absoluteDate: due))
+    }
+
+    private func updateReminder(_ p: JSONValue) throws -> JSONValue {
+        let r = try reminder(p)
+        let c = p["changes"] ?? .object([:])
+        if let t = c["title"]?.string { r.title = t }
+        if let n = c["notes"]?.string { r.notes = n }
+        if let due = ISO.parse(c["due"]?.string) { setDue(r, due) }
+        try store.save(r, commit: true)
+        return .object(["reminder_id": .string(r.calendarItemIdentifier), "updated": .bool(true)])
+    }
+
+    private func completeReminder(_ p: JSONValue) throws -> JSONValue {
+        let r = try reminder(p)
         if !r.isCompleted {
             r.isCompleted = true
             try store.save(r, commit: true)
         }
-        return .object(["reminder_id": .string(id), "completed": .bool(true)])
+        return .object(["reminder_id": .string(r.calendarItemIdentifier), "completed": .bool(true)])
+    }
+
+    private func deleteReminder(_ p: JSONValue) throws -> JSONValue {
+        try requireReminders()
+        guard let id = p["reminder_id"]?.string else { throw ExecutorError("reminder_id required") }
+        guard let r = store.calendarItem(withIdentifier: id) as? EKReminder else { return .object(["reminder_id": .string(id), "already_deleted": .bool(true)]) }
+        try store.remove(r, commit: true)
+        return .object(["reminder_id": .string(id), "deleted": .bool(true)])
     }
 
     // MARK: Context snapshot for the cloud assistant
@@ -170,6 +198,8 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
                 "id": .string(e.eventIdentifier ?? ""), "title": .string(e.title ?? ""), "start": .string(ISO.format(e.startDate)),
                 "end": .string(ISO.format(e.endDate)), "all_day": .bool(e.isAllDay), "calendar": .string(e.calendar.title),
                 "location": e.location.map { .string($0) } ?? .null,
+                "notes": e.notes.map { .string(String($0.prefix(300))) } ?? .null,
+                "by_orbit": .bool(e.url?.scheme == "orbit"),
             ])
         }
     }
@@ -181,6 +211,8 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
             .object([
                 "id": .string(r.calendarItemIdentifier), "title": .string(r.title ?? ""), "list": .string(r.calendar.title),
                 "due": r.dueDateComponents.flatMap { Calendar.current.date(from: $0) }.map { .string(ISO.format($0)) } ?? .null,
+                "notes": r.notes.map { .string(String($0.prefix(300))) } ?? .null,
+                "by_orbit": .bool(r.url?.scheme == "orbit"),
             ])
         }
     }

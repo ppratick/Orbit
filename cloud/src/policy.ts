@@ -25,6 +25,14 @@ export interface ActionSpec {
 const always = (reason: string) => () => reason;
 const never = () => null;
 const s = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : JSON.stringify(v));
+/** "title → X, start → Y" for approval summaries. */
+const describeChanges = (c: unknown) =>
+  c && typeof c === "object"
+    ? Object.entries(c as Record<string, unknown>)
+        .filter(([, v]) => v !== undefined && v !== null && v !== "")
+        .map(([k, v]) => `${k} → ${s(v)}`)
+        .join(", ") || "no changes"
+    : "no changes";
 
 export const ACTIONS: Record<string, ActionSpec> = {
   // ── Email ───────────────────────────────────────────────────────────────
@@ -58,13 +66,13 @@ export const ACTIONS: Record<string, ActionSpec> = {
     target: "apple",
     approval: always("Changing an existing event"),
     retrySafe: true,
-    summarize: (p) => `Change event ${s(p.event_id)}: ${s(p.changes)}`,
+    summarize: (p) => `Change event "${s(p.title) || s(p.event_id)}": ${describeChanges(p.changes)}`,
   },
   "calendar.delete_event": {
     target: "apple",
     approval: always("Deleting an event"),
     retrySafe: true,
-    summarize: (p) => `Delete event ${s(p.event_id)}`,
+    summarize: (p) => `Delete event "${s(p.title) || s(p.event_id)}"`,
   },
   "reminders.create": {
     target: "apple",
@@ -72,11 +80,23 @@ export const ACTIONS: Record<string, ActionSpec> = {
     retrySafe: true,
     summarize: (p) => `Create reminder "${s(p.title)}"${p.due ? ` due ${s(p.due)}` : ""}`,
   },
+  "reminders.update": {
+    target: "apple",
+    approval: always("Changing an existing reminder"),
+    retrySafe: true,
+    summarize: (p) => `Change reminder "${s(p.title) || s(p.reminder_id)}": ${describeChanges(p.changes)}`,
+  },
   "reminders.complete": {
     target: "apple",
     approval: always("Changing an existing reminder"),
     retrySafe: true,
-    summarize: (p) => `Mark reminder ${s(p.reminder_id)} complete`,
+    summarize: (p) => `Mark reminder "${s(p.title) || s(p.reminder_id)}" complete`,
+  },
+  "reminders.delete": {
+    target: "apple",
+    approval: always("Deleting a reminder"),
+    retrySafe: true,
+    summarize: (p) => `Delete reminder "${s(p.title) || s(p.reminder_id)}"`,
   },
   // ── Messaging / code / coursework ────────────────────────────────────────
   "github.comment": {
@@ -158,6 +178,15 @@ export function getAction(name: string): ActionSpec {
 }
 
 /** Device kinds that may execute an action target. */
+/**
+ * Edits to an existing Apple item carry the id of the device that reported it (EventKit ids are
+ * device-local), so only that device may run them.
+ */
+export function deviceMayRun(target: Target, kind: string, deviceId: string, params: Record<string, unknown>): boolean {
+  if (!targetMatchesDevice(target, kind)) return false;
+  return typeof params.device_id !== "string" || params.device_id === deviceId;
+}
+
 export function targetMatchesDevice(target: Target, kind: string): boolean {
   if (target === "apple") return kind === "mac" || kind === "iphone";
   return target === kind;

@@ -153,8 +153,11 @@ final class AppModel: NSObject, ObservableObject {
     func tick() async {
         guard let api else { return }
         await store.sync(using: api)
-        if let runner, await runner.drain() > 0 { await store.sync(using: api) }
-        if Date().timeIntervalSince(lastContextUpload) > 15 * 60 { await uploadContext() }
+        let ran = await runner?.drain() ?? 0
+        // After running device work, refresh the calendar/reminders snapshot right away so the
+        // assistant sees the change (and its ids) on the next turn, then pull the posted result.
+        if ran > 0 || Date().timeIntervalSince(lastContextUpload) > 15 * 60 { await uploadContext() }
+        if ran > 0 { await store.sync(using: api) }
     }
 
     func registerCapabilities() async {
@@ -228,6 +231,8 @@ final class AppModel: NSObject, ObservableObject {
             if let r = final { store.upsert(messages: r.messages, conversationId: conversationId) }
             await store.sync(using: api) // brings the server copy of the user message
             store.removeMessage(local.id)
+            // If the turn queued work this device can do (a reminder, an event), run it now instead of at the next poll.
+            Task { await self.tick() }
         } catch {
             // Retrying with the same client id is safe: the server replays a finished turn instead of re-running it.
             failedSend[conversationId] = (text, clientId)
@@ -258,8 +263,7 @@ final class AppModel: NSObject, ObservableObject {
         do {
             try await api.decide(approvalId: approvalId, approve: approve)
             await store.sync(using: api)
-            if let runner { await runner.drain() } // if this device can run it, do it now
-            await store.sync(using: api)
+            await tick() // if this device can run it, do it now; the result posts to chat
         } catch {
             banner = error.localizedDescription
         }

@@ -47,7 +47,9 @@ anything consequential still needs an approval the model cannot grant.
 - The cloud does all background and scheduled work.
 - The iPhone syncs while open and during opportunistic `BGAppRefresh`.
 - The Mac companion runs from the menu bar and polls every 20 seconds, so `apple` tasks usually run on the Mac.
-- Apple Calendar and Reminders snapshots are uploaded every 15 minutes, so the cloud assistant can see your schedule.
+- Apple Calendar and Reminders snapshots are uploaded every 15 minutes and right after a device runs a task, so the cloud assistant can see your schedule. Each device keeps its own snapshot.
+- EventKit ids are device-local. An edit (update, complete or delete) carries the `device_id` of the device that reported the item, and only that device can claim it. Creates go to whichever Apple device is online first.
+- When a device task finishes, the Worker posts a one-sentence result to the conversation that asked for it, so every synced device sees the outcome.
 
 **Free-plan budget.**
 - Workers Free allows 50 D1 queries and about 10 ms CPU per invocation.

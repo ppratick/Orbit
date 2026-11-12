@@ -113,6 +113,7 @@ function respond(j) {
   if (/remember/i.test(msg)) return [call("remember", { kind: "preference", content: "Prefers short replies" })];
   if (/work calendar/i.test(msg)) return [call("add_calendar_event", { title: "Team sync", start: "2026-11-12T15:00:00-05:00", calendar: "Work" })];
   if (/dentist/i.test(msg)) return [call("add_calendar_event", { title: "Dentist", start: "2026-11-13T09:00:00-05:00" })];
+  if (/mark (R\w+) done/i.test(msg)) return [call("complete_reminder", { reminder_id: msg.match(/mark (R\w+) done/i)[1] })];
   if (/track/i.test(msg)) return [call("track_responsibility", { title: "Return headphones", kind: "return", due_at: "2026-11-20T17:00:00-05:00" })];
   if (/forget/i.test(msg)) return [call("forget_memory", { memory_id: msg.match(/mem_[\w-]+/)?.[0] ?? "x" })];
   if (/read file/i.test(msg)) return [call("mac_read_file", { path: "~/notes.txt" })];
