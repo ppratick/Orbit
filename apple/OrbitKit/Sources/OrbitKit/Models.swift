@@ -91,14 +91,18 @@ public struct ProfileSection: Codable, Identifiable, Hashable, Sendable {
     /// The fixed set of fields, in display order. Short fields hold one value; the rest are notes.
     public static let catalog: [(id: String, title: String, question: String, symbol: String, multiline: Bool)] = [
         ("name", "Name", "What should Orbit call you?", "person.fill", false),
-        ("timezone", "Time zone", "e.g. Eastern Time", "globe.americas.fill", false),
+        ("timezone", "Time zone", "Choose", "globe.americas.fill", false),
         ("school", "School", "e.g. CMU, Computer Science", "graduationcap.fill", false),
+        ("year", "Year", "Choose", "calendar", false),
         ("work", "Work", "Job or role, if any", "briefcase.fill", false),
-        ("people", "Important people", "Family, friends, teammates, professors", "person.2.fill", true),
-        ("routines", "Routines", "When you wake up, work, exercise, wind down", "clock.fill", true),
+        ("wake", "Wake up", "Add", "sunrise.fill", false),
+        ("bedtime", "Bedtime", "Add", "moon.fill", false),
+        ("routines", "Routines", "When you work, exercise, wind down", "clock.fill", true),
         ("goals", "Goals & interests", "What you’re working toward, what you enjoy", "star.fill", true),
         ("context", "Anything else", "Anything else Orbit should keep in mind", "text.alignleft", true),
     ]
+    /// Ready-made choices for the fields that have them.
+    public static let yearOptions = ["Freshman", "Sophomore", "Junior", "Senior", "Graduate student", "Not in school"]
     public static func title(for id: String) -> String { catalog.first { $0.id == id }?.title ?? id.capitalized }
 }
 

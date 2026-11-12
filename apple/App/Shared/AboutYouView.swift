@@ -28,26 +28,43 @@ struct AboutYouContent: View {
             OrbitGroup(header: "Basics") {
                 ProfileField(id: "name")
                 OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
-                ProfileField(id: "timezone", fill: Self.currentTimeZone)
+                ProfileField(id: "timezone", options: Self.timeZoneOptions)
             }
             OrbitGroup(header: "School & work") {
                 ProfileField(id: "school")
                 OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
+                ProfileField(id: "year", options: ProfileSection.yearOptions)
+                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
                 ProfileField(id: "work")
             }
-            ForEach(ProfileSection.catalog.filter(\.multiline), id: \.id) { field in
-                OrbitGroup(header: field.title, footer: field.id == "context"
-                           ? "Saves as you type and syncs to your devices. What you write here takes priority over anything Orbit infers." : nil) {
-                    ProfileField(id: field.id)
-                }
+            OrbitGroup(header: "Routines") {
+                ProfileField(id: "wake", isTime: true)
+                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
+                ProfileField(id: "bedtime", isTime: true)
+                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
+                ProfileField(id: "routines")
+            }
+            OrbitGroup(header: "Goals & interests") { ProfileField(id: "goals") }
+            OrbitGroup(header: "Anything else",
+                       footer: "Saves as you go and syncs to your devices. What you set here takes priority over anything Orbit infers.") {
+                ProfileField(id: "context")
             }
         }
         .animation(.easeOut(duration: 0.2), value: store.pendingProfileSuggestions.map(\.id))
     }
 
-    /// e.g. "Eastern Time".
-    static var currentTimeZone: String {
-        TimeZone.current.localizedName(for: .generic, locale: .current) ?? TimeZone.current.identifier
+    /// This device's zone first, then common ones, by their everyday names ("Eastern Time").
+    static var timeZoneOptions: [String] {
+        let ids = ["Pacific/Honolulu", "America/Anchorage", "America/Los_Angeles", "America/Denver", "America/Phoenix",
+                   "America/Chicago", "America/New_York", "Europe/London", "Europe/Paris", "Asia/Kolkata",
+                   "Asia/Shanghai", "Asia/Tokyo", "Australia/Sydney"]
+        func name(_ zone: TimeZone) -> String {
+            zone.identifier == "America/Phoenix" ? "Arizona Time"
+                : zone.localizedName(for: .generic, locale: .current) ?? zone.identifier
+        }
+        var out = [name(.current)]
+        for id in ids { if let z = TimeZone(identifier: id), !out.contains(name(z)) { out.append(name(z)) } }
+        return out
     }
 
     private func suggestionRow(_ suggestion: ProfileSuggestion) -> some View {
@@ -93,8 +110,10 @@ struct ProfileField: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: OrbitStore
     let id: String
-    /// A suggested value offered as a one-tap button while the field is empty (time zone).
-    var fill: String? = nil
+    /// Ready-made choices: the field becomes a pick list (time zone, year).
+    var options: [String] = []
+    /// The field holds a time of day, picked with a time picker (wake-up, bedtime).
+    var isTime = false
     @State private var text = ""
     @State private var pending: Task<Void, Never>?
     @State private var error: String?
@@ -117,23 +136,14 @@ struct ProfileField: View {
                 HStack(spacing: 12) {
                     Text(info.title).font(OrbitTheme.rowTitle)
                         .frame(width: OrbitTheme.isMac ? 82 : 96, alignment: .leading)
-                    TextField(info.question, text: $text)
-                        .textFieldStyle(.plain).font(OrbitTheme.body)
-                        .focused($focused)
-                        .onSubmit(saveNow)
-                        #if os(iOS)
-                        .textInputAutocapitalization(id == "name" ? .words : .sentences)
-                        #endif
-                    if let fill, trimmed(text).isEmpty {
-                        Button("Use current") {
-                            text = fill
-                            saveNow()
-                        }
-                        .buttonStyle(.plain).font(OrbitTheme.rowSubtitle.weight(.semibold))
-                        .foregroundStyle(AboutYouContent.tint)
-                        .fixedSize()
-                        .help(fill)
-                        .accessibilityLabel("Use current time zone, \(fill)")
+                    if !options.isEmpty { optionPicker } else if isTime { timePicker } else {
+                        TextField(info.question, text: $text)
+                            .textFieldStyle(.plain).font(OrbitTheme.body)
+                            .focused($focused)
+                            .onSubmit(saveNow)
+                            #if os(iOS)
+                            .textInputAutocapitalization(id == "name" ? .words : .sentences)
+                            #endif
                     }
                 }
             }
@@ -147,7 +157,7 @@ struct ProfileField: View {
         .padding(.vertical, OrbitTheme.isMac ? 10 : 13)
         .frame(minHeight: OrbitTheme.rowMinHeight)
         .contentShape(Rectangle())
-        .onTapGesture { focused = true }
+        .onTapGesture { if options.isEmpty, !isTime { focused = true } }
         .accessibilityElement(children: .contain)
         .onAppear { text = stored }
         // Another device changed it: show the new value unless the user is mid-edit here.
@@ -155,6 +165,78 @@ struct ProfileField: View {
         .onChange(of: text) { _, _ in scheduleSave() }
         .onChange(of: focused) { _, isFocused in if !isFocused { saveNow() } }
         .onDisappear { if changed { saveNow() } }
+    }
+
+    private func set(_ value: String) {
+        text = value
+        saveNow()
+    }
+
+    /// A menu of choices; an unknown saved value (typed before, or synced) still shows and stays selectable.
+    private var optionPicker: some View {
+        Menu {
+            ForEach(options.contains(text) || trimmed(text).isEmpty ? options : [text] + options, id: \.self) { option in
+                Button { set(option) } label: {
+                    if option == text { Label(option, systemImage: "checkmark") } else { Text(option) }
+                }
+            }
+            if !trimmed(text).isEmpty {
+                Divider()
+                Button("Clear", role: .destructive) { set("") }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(trimmed(text).isEmpty ? info.question : text)
+                    .foregroundStyle(trimmed(text).isEmpty ? Color.secondary.opacity(0.7) : Color.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: OrbitTheme.isMac ? 10 : 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(OrbitTheme.body)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button).buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .accessibilityLabel(info.title)
+        .accessibilityValue(trimmed(text).isEmpty ? "Not set" : text)
+    }
+
+    private static let timeFormat: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
+    /// Empty until set; then a native time picker plus a clear button.
+    @ViewBuilder private var timePicker: some View {
+        if let date = Self.timeFormat.date(from: trimmed(text)) {
+            DatePicker(info.title, selection: Binding(get: { date }, set: { set(Self.timeFormat.string(from: $0)) }),
+                       displayedComponents: .hourAndMinute)
+                .labelsHidden()
+                #if os(macOS)
+                .datePickerStyle(.stepperField)
+                #endif
+            Spacer(minLength: 4)
+            Button { set("") } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain).accessibilityLabel("Clear \(info.title.lowercased())")
+        } else {
+            Button {
+                let defaultTime = id == "bedtime" ? "11:00 PM" : "7:00 AM"
+                set(defaultTime)
+            } label: {
+                HStack {
+                    Text("Add").foregroundStyle(AboutYouContent.tint).fontWeight(.semibold)
+                    Spacer(minLength: 0)
+                }
+                .font(OrbitTheme.body).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add \(info.title.lowercased()) time")
+        }
     }
 
     private func trimmed(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines) }

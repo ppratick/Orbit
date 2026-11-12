@@ -8,15 +8,18 @@ import { newId, now } from "./util";
  */
 export const PROFILE_SECTIONS = [
   { id: "name", title: "Name", question: "What Orbit should call you.", kind: "line" },
-  { id: "timezone", title: "Time zone", question: "Where you usually are, e.g. Eastern Time.", kind: "line" },
+  { id: "timezone", title: "Time zone", question: "Where you usually are.", kind: "choice" },
   { id: "school", title: "School", question: "Where you study and what.", kind: "line" },
+  { id: "year", title: "Year", question: "Year in school.", kind: "choice" },
   { id: "work", title: "Work", question: "Your job or role, if you have one.", kind: "line" },
-  { id: "people", title: "Important people", question: "Who comes up often — family, friends, teammates, professors?", kind: "text" },
-  { id: "routines", title: "Routines", question: "When do you usually wake up, work, exercise or wind down?", kind: "text" },
+  { id: "wake", title: "Usually wakes up", question: "Usual wake-up time.", kind: "time" },
+  { id: "bedtime", title: "Usually goes to bed", question: "Usual bedtime.", kind: "time" },
+  { id: "routines", title: "Routines", question: "When do you usually work, exercise or wind down?", kind: "text" },
   { id: "goals", title: "Goals & interests", question: "What are you working toward, and what do you enjoy?", kind: "text" },
   { id: "context", title: "Anything else", question: "Anything else Orbit should keep in mind.", kind: "text" },
 ] as const;
-const isLine = (id: string) => PROFILE_SECTIONS.some((s) => s.id === id && s.kind === "line");
+/** Single-value fields (typed, picked or a time), as opposed to free-form notes. */
+const isLine = (id: string) => PROFILE_SECTIONS.some((s) => s.id === id && s.kind !== "text");
 export type SectionId = (typeof PROFILE_SECTIONS)[number]["id"];
 const SECTION_IDS = PROFILE_SECTIONS.map((s) => s.id) as readonly string[];
 export const isSection = (v: unknown): v is SectionId => typeof v === "string" && SECTION_IDS.includes(v);
@@ -160,7 +163,7 @@ export function profileForPrompt(sections: { id: string; content: string }[]): s
   return PROFILE_SECTIONS.map((s) => {
     const text = sections.find((x) => x.id === s.id)?.content.trim();
     if (!text) return "";
-    if (s.kind === "line" && !text.includes("\n")) return `${s.title}: ${text}`;
+    if (s.kind !== "text" && !text.includes("\n")) return `${s.title}: ${text}`;
     return `${s.title}:\n${text.split("\n").map((l) => `  ${l}`).join("\n")}`;
   })
     .filter(Boolean)

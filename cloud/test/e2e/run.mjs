@@ -265,7 +265,7 @@ try {
   });
   await step("About you: user edits sync, chat facts become suggestions, user stays in charge", async () => {
     const p0 = (await api("/v1/profile", { token: phone })).body;
-    assert.deepEqual(p0.sections.map((x) => x.id), ["name", "timezone", "school", "work", "people", "routines", "goals", "context"]);
+    assert.deepEqual(p0.sections.map((x) => x.id), ["name", "timezone", "school", "year", "work", "wake", "bedtime", "routines", "goals", "context"]);
     const basics = p0.sections[0];
     const put = await api("/v1/profile/name", { method: "PUT", token: phone, body: { content: "Sam", base_updated_at: basics.updated_at } });
     assert.equal(put.status, 200, JSON.stringify(put.body));
@@ -290,7 +290,7 @@ try {
     const instr = requests.at(-1).instructions;
     assert.ok(instr.includes("Name: Sam") && instr.includes("Studies computer science at CMU"), "profile is assistant context");
     const s = (await api("/v1/sync?since=0", { token: mac })).body;
-    assert.equal(s.changes.profile.length, 9, "8 fields plus the retired basics row");
+    assert.equal(s.changes.profile.length, 12, "10 fields plus the retired basics and people rows");
     assert.ok(s.changes.profile_suggestion.length >= 1 && !JSON.stringify(s.changes.profile_suggestion).includes('"norm"'));
   });
   let calTask;
