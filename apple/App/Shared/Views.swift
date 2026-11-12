@@ -620,7 +620,8 @@ struct MessageBubble: View {
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 40) }
-            Text(LocalizedStringKey(message.content))
+            // Rendered as plain text (never Markdown), with links detected — like a text message.
+            Text(PlainText.attributed(message.content))
                 .textSelection(.enabled)
                 .font(.body)
                 .lineSpacing(5)

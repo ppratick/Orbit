@@ -99,3 +99,17 @@ final class SignInTests: XCTestCase {
         if case .done(let r)? = done { XCTAssertEqual(r.messages.first?.content, "ok") } else { XCTFail() }
     }
 }
+
+final class PlainTextTests: XCTestCase {
+    func testStripsMarkdownLikeTheServer() {
+        XCTAssertEqual(PlainText.clean("## Today\n\n**Dentist** at 9am, bring your *card*.\n\n- Call Sam\n- Pay rent"),
+                       "Today\n\nDentist at 9am, bring your card.\n\nCall Sam\nPay rent")
+        XCTAssertEqual(PlainText.clean("Rate is 5 * 3 = 15, file my_notes_v2.txt"), "Rate is 5 * 3 = 15, file my_notes_v2.txt")
+    }
+
+    func testDetectsLinks() {
+        let a = PlainText.attributed("Syllabus: https://canvas.example.edu/s")
+        XCTAssertTrue(a.runs.contains { $0.link?.absoluteString == "https://canvas.example.edu/s" })
+        XCTAssertEqual(String(a.characters), "Syllabus: https://canvas.example.edu/s")
+    }
+}

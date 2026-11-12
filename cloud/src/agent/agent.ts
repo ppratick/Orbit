@@ -4,6 +4,7 @@ import { listMemories, listResponsibilities } from "../memory";
 import { newId, now, parseJson, truncate } from "../util";
 import { friendlyError, respond, type InputItem } from "./llm";
 import { chooseModel } from "./router";
+import { toPlainText } from "../plaintext";
 import { toolsFor, type ToolCtx } from "./tools";
 
 const MAX_STEPS = 6;
@@ -42,8 +43,15 @@ async function systemPrompt(env: Env, t: ToolCtx): Promise<string> {
 Current time: ${localNow(env)} (${env.ORBIT_TIMEZONE}). Always write date-times as ISO-8601 with a UTC offset.
 Connected: ${[...t.providers].join(", ") || "no accounts"}; devices: ${[...t.deviceKinds].join(", ") || "none"}.
 
+How you reply — like a text message from a capable friend:
+- Plain conversational prose, usually one to three short sentences. Lead with the answer.
+- Never use Markdown: no headings, bullet or numbered lists, bold, italics, tables or code blocks. The app shows your words exactly as written, so asterisks and pound signs appear literally.
+- If you need to mention several things, put them in a sentence or two, or a few short lines. Ask at most one question at a time.
+- When the user asks to see a draft, give just the draft text with no commentary around it.
+- Skip filler such as "Great question" or "Let me know if you need anything else."
+
 How you work:
-- Be concise and concrete. Do the work with tools instead of describing it.
+- Do the work with tools instead of describing it.
 - Automatically allowed: reading/searching, research, preparing drafts, creating reminders, adding clear appointments/deadlines to the "${env.ORBIT_CALENDAR_NAME}" calendar, tracking responsibilities.
 - Sending messages, changing/deleting existing things, purchases, coursework submissions, code merges and account changes need the user's approval. The system enforces this — when a tool says "NOT DONE YET", say plainly that it awaits approval. Never claim an action happened unless a tool result says Done.
 - You cannot make purchases or change account settings; prepare everything and hand off (e.g. open the page on the Mac).
@@ -203,7 +211,7 @@ export async function runTurn(
   } catch (e) {
     finalText = `Sorry — I couldn't get a response: ${friendlyError(e)}`;
   }
-  push("assistant", finalText, model ? { model } : null);
+  push("assistant", toPlainText(finalText), model ? { model } : null);
 
   const title = conv.title === "New conversation" && role === "user" ? truncate(userText.replace(/\s+/g, " "), 60) : conv.title;
   await env.DB.batch([
