@@ -73,11 +73,38 @@ export async function deviceSnapshots(env: Env, kind?: string): Promise<Snapshot
 /** Find which device reported an EventKit id (ids are device-local), so the edit is routed to that device. */
 export async function locateItem(env: Env, kind: "calendar" | "reminders", id: string): Promise<{ id: string; device_id: string; title: string } | null> {
   if (!id) return null;
-  for (const snap of await deviceSnapshots(env, kind)) {
+  const snaps = await deviceSnapshots(env, kind);
+  for (const snap of snaps) {
     const hit = snap.items.find((i) => i.id === id);
     if (hit) return { id, device_id: snap.device_id, title: typeof hit.title === "string" ? hit.title : "" };
   }
-  return null;
+  // Models sometimes mistype a character or two of these long random ids. Accept a near miss
+  // only when exactly one known id is that close; the approval card still shows the title.
+  const near: { id: string; device_id: string; title: string }[] = [];
+  for (const snap of snaps) {
+    for (const i of snap.items) {
+      if (typeof i.id === "string" && i.id.length >= 20 && Math.abs(i.id.length - id.length) <= 2 && editDistance(i.id, id, 2) <= 2) {
+        if (!near.some((n) => n.id === i.id)) near.push({ id: i.id, device_id: snap.device_id, title: typeof i.title === "string" ? i.title : "" });
+      }
+    }
+  }
+  return near.length === 1 ? near[0] : null;
+}
+
+/** Levenshtein distance, giving up early once it exceeds `max`. */
+export function editDistance(a: string, b: string, max: number): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      best = Math.min(best, cur[j]);
+    }
+    if (best > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
 }
 
 const unknownId = (what: string) =>
@@ -328,11 +355,16 @@ const TOOLS: Tool[] = [
   },
   {
     name: "send_email",
-    description: "Send an email. Always requires the user's approval; prefer draft_email unless the user asked to send.",
-    properties: { to: S("Recipients"), cc: S("Optional"), subject: S("Subject"), body: S("Body"), in_reply_to: S("Optional"), account_id: S("Optional") },
+    description: "Send an email from Gmail or iCloud Mail. Always requires the user's approval; prefer draft_email unless the user asked to send. Pass account_id to choose the sending account.",
+    properties: { to: S("Recipients"), cc: S("Optional"), subject: S("Subject"), body: S("Body"), in_reply_to: S("Optional"), account_id: S("Optional; defaults to the first email account") },
     required: ["to", "subject", "body"],
-    available: has("google"),
-    run: (t, a) => act(t, "email.send", { to: str(a, "to"), cc: str(a, "cc"), subject: str(a, "subject"), body: str(a, "body"), in_reply_to: str(a, "in_reply_to"), account_id: str(a, "account_id") }),
+    available: (t) => t.providers.has("google") || t.providers.has("icloud_mail"),
+    run: async (t, a) => {
+      // Resolve the account now so the approval card names who it's sent from.
+      const { acct } = await mailAccount(t.env, str(a, "account_id") || null);
+      return act(t, "email.send", { to: str(a, "to"), cc: str(a, "cc"), subject: str(a, "subject"), body: str(a, "body"), in_reply_to: str(a, "in_reply_to"),
+        account_id: acct.id, from: acct.identity ?? acct.label });
+    },
   },
   {
     name: "send_draft",

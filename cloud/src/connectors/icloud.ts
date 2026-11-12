@@ -3,11 +3,14 @@ import type { Env } from "../env";
 import { accountSecret, type AccountRow } from "../accounts";
 import { buildMime, validateRecipients, type MailMessage, type MailSummary, type OutgoingMail } from "./mail";
 import { decodeWords, extractText, splitHeaderBody } from "./mime";
+import { envelopeAddresses, smtpSend } from "./smtp";
 
 /**
  * iCloud Mail over IMAP (imap.mail.me.com:993, TLS) using Workers TCP sockets.
  * Auth: full iCloud address + an app-specific password (appleid.apple.com).
- * Drafts are created by APPENDing to the Drafts mailbox. Sending (SMTP) is not implemented yet.
+ * Drafts are created by APPENDing to the Drafts mailbox. Sending goes over SMTP submission
+ * (smtp.mail.me.com:587, STARTTLS) with the same credentials, then a copy is filed in Sent Messages.
+ * Sending only ever runs from an approved email.send task.
  */
 interface IcloudSecret {
   username: string;
@@ -282,6 +285,33 @@ export const icloudMail = {
       const uid = r.status.match(/APPENDUID \d+ (\d+)/)?.[1];
       return { draft_id: uid ? `drafts:${uid}` : "drafts:unknown" };
     });
+  },
+
+  async send(env: Env, acct: AccountRow, mail: OutgoingMail): Promise<{ message_id: string }> {
+    const sec = await accountSecret<IcloudSecret>(env, acct);
+    let inReplyToHeader: string | undefined, referencesHeader: string | undefined;
+    if (mail.in_reply_to) {
+      const orig = await icloudMail.read(env, acct, mail.in_reply_to);
+      inReplyToHeader = orig.message_id_header;
+      referencesHeader = orig.references;
+    }
+    const to = validateRecipients(mail.to);
+    const cc = mail.cc ? validateRecipients(mail.cc) : undefined;
+    const domain = sec.username.split("@")[1] ?? "icloud.com";
+    const messageId = `<${crypto.randomUUID()}@${domain}>`;
+    const mime = `Date: ${new Date().toUTCString()}\r\nMessage-ID: ${messageId}\r\n` +
+      buildMime({ ...mail, from: sec.username, to, cc, inReplyToHeader, referencesHeader });
+    await smtpSend({
+      host: "smtp.mail.me.com", port: 587, username: sec.username, password: sec.app_password,
+      from: sec.username, recipients: [...envelopeAddresses(to), ...(cc ? envelopeAddresses(cc) : [])], message: mime,
+    });
+    // iCloud's SMTP doesn't file a sent copy; do it so the message shows in Sent on every device.
+    try {
+      await withSession(env, acct, (s) => s.cmd(`APPEND "Sent Messages" (\\Seen)`, mime));
+    } catch (e) {
+      console.warn("icloud sent copy", e instanceof Error ? e.message : String(e));
+    }
+    return { message_id: messageId };
   },
 
   /** Verify credentials (used when the account is added). */

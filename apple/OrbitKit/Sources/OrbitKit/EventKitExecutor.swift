@@ -197,6 +197,8 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
             .object([
                 "id": .string(e.eventIdentifier ?? ""), "title": .string(e.title ?? ""), "start": .string(ISO.format(e.startDate)),
                 "end": .string(ISO.format(e.endDate)), "all_day": .bool(e.isAllDay), "calendar": .string(e.calendar.title),
+                // Which account holds it (e.g. "iCloud", "Google"), so edits target the right one.
+                "account": .string(e.calendar.source?.title ?? ""),
                 "location": e.location.map { .string($0) } ?? .null,
                 "notes": e.notes.map { .string(String($0.prefix(300))) } ?? .null,
                 "by_orbit": .bool(e.url?.scheme == "orbit"),

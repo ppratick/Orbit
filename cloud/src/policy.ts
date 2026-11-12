@@ -46,7 +46,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     target: "cloud",
     approval: always("Sending a message"),
     retrySafe: false,
-    summarize: (p) => `Send email to ${s(p.to)}: "${s(p.subject)}"`,
+    summarize: (p) => `Send email${p.from ? ` from ${s(p.from)}` : ""} to ${s(p.to)}: "${s(p.subject)}"`,
   },
   "email.send_draft": {
     target: "cloud",

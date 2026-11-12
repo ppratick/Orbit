@@ -71,3 +71,12 @@ describe("GitHub connector", () => {
     expect(r.items).toHaveLength(1); // de-duplicated across the review/involves queries
   });
 });
+
+import { editDistance } from "../../src/agent/tools";
+describe("event id tolerance", () => {
+  it("measures small copying slips and stops early on big differences", () => {
+    const real = "740A34F7-66DA-40F2-88CB-A0C2253B6154:6676FF56-8923-4EAC-A4BC-0B435761DFF4";
+    expect(editDistance(real, real.replace("A4BC", "A4CB"), 2)).toBe(2);
+    expect(editDistance(real, "10D81026-EB8B-484C-80E0-0EDA244D59F6:72DBFB29-8FE8-4C27-BE09-F2FF0F3DE04D", 2)).toBe(3);
+  });
+});
