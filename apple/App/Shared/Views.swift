@@ -495,7 +495,7 @@ struct ChatView: View {
                             }
                         }
                         ForEach(store.chat(conversationId)) { m in MessageBubble(message: m).id(m.id) }
-                        if model.sending.contains(conversationId) {
+                        if model.sending.contains(conversationId) && model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
                                 if let live = model.streaming[conversationId], !live.isEmpty {
                                     MessageBubble(message: Message(id: "streaming", conversationId: conversationId, role: "assistant", content: live, meta: nil, createdAt: 0))
@@ -634,7 +634,7 @@ struct ChatView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(dictation.isRecording ? Color.red : .white.opacity(0.75))
                     .accessibilityLabel(dictation.isRecording ? "Stop dictation" : "Dictate message")
-                    .disabled(model.sending.contains(conversationId) || dictation.isStarting || dictation.isFinishing)
+                    .disabled(dictation.isStarting || dictation.isFinishing)
                     #endif
                     if model.sending.contains(conversationId) {
                         ProgressView().controlSize(.small).frame(width: 40, height: 40)
@@ -693,7 +693,7 @@ struct ChatView: View {
         String([dictationPrefix, text].filter { !$0.isEmpty }.joined(separator: " ").prefix(4000))
     }
     private func startDictation() {
-        guard !model.sending.contains(conversationId), !dictation.isBusy else { return }
+        guard !dictation.isBusy else { return }
         dictationPrefix = model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         composerFocused = false
         Task { await dictation.start() }
@@ -709,7 +709,7 @@ struct ChatView: View {
         }
         #endif
         let draft = model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !draft.isEmpty, !model.sending.contains(conversationId) else { return }
+        guard !draft.isEmpty else { return }
         let hasOverride = draft.lowercased().hasPrefix("/luna ") || draft.lowercased().hasPrefix("/sol ")
         let prefix = selectedModel == "Auto" || hasOverride ? "" : "/\(selectedModel.lowercased()) "
         model.chatDraft = ""
@@ -901,12 +901,8 @@ struct WorkView: View {
 
     var body: some View {
         OrbitScreen(spacing: OrbitTheme.isMac ? 18 : 22) {
-            HStack(spacing: 10) {
-                OrbitStatTile(value: activeTasks.filter { $0.status != "awaiting_approval" }.count, label: "Running")
-                OrbitStatTile(value: activeTasks.filter { $0.status == "awaiting_approval" }.count, label: "Needs you", tint: .orange)
-                OrbitStatTile(value: doneToday, label: "Done today", tint: .green)
-            }
-            OrbitSegmented(titles: ["Active", "Done", "Updates", "History"], selection: $tab, badges: [2: unread])
+            OrbitSegmented(titles: ["Active", "Done", "Updates", "History"], selection: $tab,
+                           badges: [0: activeTasks.count, 2: unread])
             Group {
                 switch tab {
                 case 0: activeList
@@ -928,13 +924,6 @@ struct WorkView: View {
         let running = activeTasks.filter { $0.status != "awaiting_approval" }
         if activeTasks.isEmpty {
             OrbitEmptyState(symbol: "bolt", title: "Nothing running", detail: "When Orbit works on something for you, it shows up here.")
-            OrbitGroup(header: "Try asking Orbit") {
-                suggestion("Check my email", detail: "Find what needs your attention", icon: "envelope.fill", tint: .blue,
-                           prompt: "Check my connected email accounts and tell me what needs my attention.")
-                OrbitRowDivider()
-                suggestion("Daily briefing", detail: "Schedule, deadlines and next steps", icon: "sun.max.fill", tint: .orange,
-                           prompt: "Give me a briefing of my schedule, upcoming deadlines, and anything waiting on me.")
-            }
         } else {
             if !waiting.isEmpty {
                 OrbitGroup(header: "Needs you") { taskRows(waiting) }
@@ -1012,12 +1001,6 @@ struct WorkView: View {
         .padding(.horizontal, OrbitTheme.rowHorizontal)
         .padding(.vertical, OrbitTheme.rowVertical)
         .frame(minHeight: OrbitTheme.rowMinHeight)
-    }
-
-    private func suggestion(_ title: String, detail: String, icon: String, tint: Color, prompt: String) -> some View {
-        Button { onCompose(prompt) } label: {
-            OrbitRow(symbol: icon, tint: tint, title: title, subtitle: detail, accessory: .external)
-        }.buttonStyle(OrbitRowButtonStyle())
     }
 
     // Updates & history
@@ -1260,7 +1243,7 @@ struct MemoryView: View {
                             title: query.isEmpty ? (tab == 0 ? "No preferences yet" : "Nothing saved about you") : "No matches",
                             detail: query.isEmpty ? (tab == 0 ? "Tell Orbit how you like things done, and it will remember." : "Facts you share, like your school or routines, live here.") : "Try a different search.")
         } else {
-            OrbitGroup(header: "\(filteredMemories.count) saved") {
+            OrbitGroup() {
                 ForEach(Array(filteredMemories.enumerated()), id: \.element.id) { index, memory in
                     if index > 0 { OrbitRowDivider(inset: OrbitTheme.rowHorizontal) }
                     memoryRow(memory)
@@ -1302,7 +1285,7 @@ struct MemoryView: View {
             OrbitEmptyState(symbol: query.isEmpty ? "bookmark" : "magnifyingglass", title: query.isEmpty ? "Keep it on your radar" : "No matches",
                             detail: query.isEmpty ? "Follow-ups, deadlines, deliveries and things you’re waiting on." : "Try a different search.")
         } else {
-            OrbitGroup(header: "\(tracked.count) tracked") {
+            OrbitGroup() {
                 ForEach(Array(tracked.enumerated()), id: \.element.id) { index, responsibility in
                     if index > 0 { OrbitRowDivider() }
                     trackingRow(responsibility)

@@ -77,10 +77,17 @@ public final class OrbitStore: ObservableObject {
 
     /// Merge locally-known rows immediately (e.g. the reply to a message the user just sent).
     public func upsert(messages new: [Message], conversationId: String) {
+        var merged = messages
         for var m in new {
             if m.conversationId == nil { m.conversationId = conversationId }
-            messages[m.id] = m
+            merged[m.id] = m
         }
+        // Sync can acknowledge a send while its reply is still streaming. Replace the
+        // optimistic row immediately, using identity rather than matching message text.
+        for m in merged.values where !m.id.hasPrefix("local-") && m.role == "user" {
+            if let clientId = m.clientMsgId { merged["local-\(clientId)"] = nil }
+        }
+        messages = merged
     }
 
     public func removeMessage(_ id: String) { messages[id] = nil }
@@ -90,7 +97,7 @@ public final class OrbitStore: ObservableObject {
     private func apply(_ r: SyncResponse) -> [OrbitNotification] {
         let c = r.changes
         c.conversation?.forEach { conversations[$0.id] = $0 }
-        c.message?.forEach { messages[$0.id] = $0 }
+        if let rows = c.message { upsert(messages: rows, conversationId: Self.mainConversationId) }
         c.task?.forEach { tasks[$0.id] = $0 }
         c.approval?.forEach { a in
             // Sync rows omit params; keep any we fetched from /v1/approvals.

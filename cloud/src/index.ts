@@ -3,6 +3,7 @@ import type { Env } from "./env";
 import { HttpError, json } from "./http";
 import { handleAuthed, redeem } from "./routes";
 import { googleCallback } from "./connectors/google";
+import { resumeConversations } from "./agent/agent";
 import { heartbeat, phaseFor } from "./heartbeat";
 
 const VERSION = "0.1.0";
@@ -43,6 +44,7 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, exec: ExecutionContext): Promise<void> {
+    exec.waitUntil(resumeConversations(env).catch((e) => console.error("chat recovery", String(e))));
     exec.waitUntil(
       heartbeat(env, phaseFor(event.scheduledTime)).then((s) => console.log("heartbeat", JSON.stringify(s))),
     );

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import assert from "node:assert/strict";
-import { startMockOpenAI, siwc, issueTokens, signIdToken } from "./mock-openai.mjs";
+import { startMockOpenAI, modelControl, siwc, issueTokens, signIdToken } from "./mock-openai.mjs";
 
 const PORT = 18787, MOCK = 18999;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -156,6 +156,99 @@ try {
     assert.equal(r.body.replayed, true);
     assert.equal(requests.length, before, "no model call on replay");
     assert.equal((await api("/v1/memories")).body.memories.length, 1);
+  });
+  async function waitForHeldModel() {
+    for (let i = 0; i < 100 && !modelControl.release; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(modelControl.release, "model reached the deterministic pause");
+  }
+  const postMessage = (id, content, client_msg_id, token = phone) => api(`/v1/conversations/${id}/messages`, {
+    method: "POST", token, body: { content, client_msg_id },
+  });
+  await step("follow-up steers before a proposed tool; retries do not duplicate messages", async () => {
+    const id = (await api("/v1/conversations", { method: "POST", body: {} })).body.id;
+    const before = (await api("/v1/memories")).body.memories.length;
+    modelControl.holdAfter = 0;
+    const active = postMessage(id, "Remember my old preference", "steer-root");
+    await waitForHeldModel();
+    const update = await postMessage(id, "Actually just say corrected; do not remember anything", "steer-correction", mac);
+    assert.equal(update.body.queued, true);
+    const retry = await postMessage(id, "Actually just say corrected; do not remember anything", "steer-correction", mac);
+    assert.equal(retry.body.queued, true);
+    modelControl.release();
+    const result = await active;
+    assert.equal(result.status, 201, JSON.stringify(result.body));
+    assert.match(result.body.messages.at(-1).content, /Corrected/);
+    assert.ok(!result.body.messages.some((m) => m.role === "tool_call"), "obsolete proposal was never executed");
+    assert.equal((await api("/v1/memories")).body.memories.length, before);
+    const rows = (await api(`/v1/conversations/${id}/messages`)).body.messages;
+    assert.equal(rows.filter((m) => m.role === "user").length, 2);
+    const replay = await postMessage(id, "same retry", "steer-correction");
+    assert.equal(replay.body.replayed, true);
+    assert.match(replay.body.messages.at(-1).content, /Corrected/);
+  });
+  await step("unrelated follow-up runs afterward, not inside the active request", async () => {
+    const id = (await api("/v1/conversations", { method: "POST", body: {} })).body.id;
+    modelControl.holdAfter = 0;
+    const active = postMessage(id, "Hello original", "queue-root");
+    await waitForHeldModel();
+    assert.equal((await postMessage(id, "Unrelated: hello second", "queue-other", mac)).body.queued, true);
+    modelControl.release();
+    const result = await active;
+    const replies = result.body.messages.filter((m) => m.role === "assistant");
+    assert.equal(replies.length, 2);
+    assert.match(replies[0].content, /Hello original/);
+    assert.match(replies[1].content, /hello second/);
+  });
+  await step("cancellation stops future tools without cancelling unrelated queued work", async () => {
+    const id = (await api("/v1/conversations", { method: "POST", body: {} })).body.id;
+    const before = (await api("/v1/memories")).body.memories.length;
+    modelControl.holdAfter = 0;
+    const active = postMessage(id, "Remember this cancelled preference", "cancel-root");
+    await waitForHeldModel();
+    await postMessage(id, "Stop, cancel that", "cancel-update");
+    await postMessage(id, "Unrelated: hello later", "cancel-queued");
+    modelControl.release();
+    const result = await active;
+    const replies = result.body.messages.filter((m) => m.role === "assistant");
+    assert.match(replies[0].content, /Stopped/);
+    assert.match(replies[1].content, /hello later/);
+    assert.equal((await api("/v1/memories")).body.memories.length, before);
+  });
+  await step("steering preserves completed tools and streams reset/settled events", async () => {
+    const id = (await api("/v1/conversations", { method: "POST", body: {} })).body.id;
+    const memoriesBefore = (await api("/v1/memories")).body.memories;
+    const before = memoriesBefore.length;
+    modelControl.holdAfter = 1; // Pause the second model step, after remember has finished.
+    const active = fetch(BASE + `/v1/conversations/${id}/messages`, {
+      method: "POST", headers: { authorization: `Bearer ${phone}`, "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ content: "Remember this completed preference", client_msg_id: "completed-root" }),
+    }).then((r) => r.text());
+    await waitForHeldModel();
+    await postMessage(id, "Actually just say corrected without saving anything else", "completed-update", mac);
+    modelControl.release();
+    const stream = await active;
+    assert.match(stream, /event: reset/);
+    assert.match(stream, /event: settled/);
+    assert.match(stream, /event: done/);
+    const after = (await api("/v1/memories")).body.memories;
+    assert.equal(after.length, before + 1);
+    for (const memory of after.filter((m) => !memoriesBefore.some((old) => old.id === m.id))) {
+      await api(`/v1/memories/${memory.id}`, { method: "DELETE" });
+    }
+  });
+  await step("resume is admin-only and interrupted work is never replayed", async () => {
+    const id = (await api("/v1/conversations", { method: "POST", body: {} })).body.id;
+    assert.equal((await api(`/v1/conversations/${id}/resume`, { method: "POST", token: phone })).status, 403);
+    const before = (await api("/v1/memories")).body.memories.length;
+    execFileSync("npx", ["wrangler", "d1", "execute", "orbit", "--local", "--persist-to", state, "--command",
+      `INSERT INTO messages (id,conversation_id,role,content,client_msg_id,created_at) VALUES ('msg_interrupted','${id}','user','Remember interrupted work','interrupted-test',1);
+       INSERT INTO chat_inbox (message_id,conversation_id,state,turn_id,created_at) VALUES ('msg_interrupted','${id}','running','msg_interrupted',1);
+       INSERT INTO chat_leases VALUES ('${id}','expired-owner',1);`], { cwd, stdio: "ignore" });
+    const recovered = await api(`/v1/conversations/${id}/resume`, { method: "POST" });
+    assert.equal(recovered.status, 201, JSON.stringify(recovered.body));
+    const messages = (await api(`/v1/conversations/${id}/messages`)).body.messages;
+    assert.match(messages.at(-1).content, /interrupted/);
+    assert.equal((await api("/v1/memories")).body.memories.length, before);
   });
   await step("system prompt carries memory; email/github tools hidden when not connected", async () => {
     const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: mac, body: { content: "which tools?", client_msg_id: "c2" } });

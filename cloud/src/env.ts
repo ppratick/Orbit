@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  SELF?: Fetcher;
   // Non-secret configuration (wrangler.jsonc "vars")
   /** Basic tasks (triage, titles, simple chat): GPT-6 Luna. */
   OPENAI_MODEL_BASIC: string;

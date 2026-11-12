@@ -8,6 +8,8 @@ const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 20
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test-key-1", alg: "RS256", use: "sig" };
 const b64u = (o) => Buffer.from(typeof o === "string" ? o : JSON.stringify(o)).toString("base64url");
 
+export const modelControl = { holdAfter: null, release: null };
+
 export const siwc = { issuer: "", validAccess: new Set(), refresh: new Map(), issued: 0, rejectNext: 0, quota: false, revoked: [] };
 
 export function signIdToken(claims) {
@@ -63,6 +65,13 @@ export function startMockOpenAI(port) {
     const j = JSON.parse(body || "{}");
     j._auth = auth;
     requests.push(j);
+    if (j.instructions?.includes("Classify follow-ups") && j.text?.format?.type === "json_object" && !/json/i.test(JSON.stringify(j.input))) {
+      return sendJson(400, { error: { code: "invalid_request", message: "JSON mode requires json in input messages" } });
+    }
+    if (modelControl.holdAfter === 0) {
+      modelControl.holdAfter = null;
+      await new Promise((resolve) => { modelControl.release = () => { modelControl.release = null; resolve(); }; });
+    } else if (typeof modelControl.holdAfter === "number") modelControl.holdAfter--;
     if (siwc.rejectNext > 0 || !siwc.validAccess.has(auth)) {
       siwc.rejectNext = Math.max(0, siwc.rejectNext - 1);
       siwc.validAccess.delete(auth);
@@ -99,6 +108,10 @@ const text = (t) => ({ type: "message", role: "assistant", content: [{ type: "ou
 
 function respond(j) {
   const instr = j.instructions ?? "";
+  if (instr.includes("Classify follow-ups")) {
+    const payload = JSON.parse(j.input[0].content);
+    return [text(JSON.stringify({ steer_ids: payload.followups.filter((m) => /^(Actually|Stop|Also)/i.test(m.content)).map((m) => m.id) }))];
+  }
   if (instr.includes("triage")) {
     const payload = j.input[0].content;
     const ids = [...payload.matchAll(/"id":"([^"]+)"/g)].map((m) => m[1]);
@@ -109,6 +122,8 @@ function respond(j) {
   const last = input[input.length - 1];
   if (last?.type === "function_call_output") return [text(`Tool said: ${String(last.output).slice(0, 160)}`)];
   const msg = String(last?.content ?? "");
+  if (/^Actually just say/i.test(msg)) return [text("Corrected without saving anything else.")];
+  if (/^Stop/i.test(msg)) return [text("Stopped. No further actions taken.")];
   const tools = new Set((j.tools ?? []).flatMap((t) => (t.tools ?? []).map((x) => x.name)));
   if (/remember/i.test(msg)) return [call("remember", { kind: "preference", content: "Prefers short replies" })];
   if (/work calendar/i.test(msg)) return [call("add_calendar_event", { title: "Team sync", start: "2026-11-12T15:00:00-05:00", calendar: "Work" })];

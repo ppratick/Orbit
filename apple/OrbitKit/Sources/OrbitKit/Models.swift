@@ -17,14 +17,16 @@ public struct Conversation: Codable, Identifiable, Hashable, Sendable {
 public struct Message: Codable, Identifiable, Hashable, Sendable {
     public var id: String
     public var conversationId: String?
+    public var clientMsgId: String?
     public var role: String          // user | assistant | tool_call | tool_result | system
     public var content: String
     public var meta: JSONValue?
     public var createdAt: Millis
     public var isVisibleChat: Bool { role == "user" || role == "assistant" }
 
-    public init(id: String, conversationId: String?, role: String, content: String, meta: JSONValue?, createdAt: Millis) {
+    public init(id: String, conversationId: String?, role: String, content: String, meta: JSONValue?, createdAt: Millis, clientMsgId: String? = nil) {
         self.id = id
+        self.clientMsgId = clientMsgId
         self.conversationId = conversationId
         self.role = role
         self.content = content

@@ -67,6 +67,17 @@ public final class APIClient: @unchecked Sendable {
     public struct PairingCode: Decodable, Sendable { public var code: String; public var expiresAt: Millis }
     public func createPairingCode() async throws -> PairingCode { try await send("POST", "v1/pairing-codes") }
 
+    public func currentDeviceId() async throws -> String? {
+        struct Principal: Decodable { var id: String? }
+        struct R: Decodable { var principal: Principal }
+        return try await send("GET", "v1/me", as: R.self).principal.id
+    }
+
+    public func removeDevice(id: String) async throws {
+        struct R: Decodable { var ok: Bool }
+        _ = try await send("DELETE", "v1/devices/\(id)", as: R.self)
+    }
+
     struct DeviceUpdate: Encodable { var name: String?; var capabilities: [String]?; var pushToken: String?; var pushEnv: String? }
     public func updateDevice(name: String? = nil, capabilities: [String]? = nil, pushToken: String? = nil, pushEnv: String? = nil) async throws {
         struct R: Decodable { var ok: Bool }
@@ -204,6 +215,8 @@ public final class APIClient: @unchecked Sendable {
         case status(model: String, step: Int)
         case delta(String)
         case tool(name: String, state: String)
+        case reset
+        case settled(TurnResponse)
         case done(TurnResponse)
     }
 
@@ -266,6 +279,8 @@ public final class APIClient: @unchecked Sendable {
             struct S: Decodable { var model: String; var step: Int }
             let s = try JSONDecoder.orbit.decode(S.self, from: d)
             return .status(model: s.model, step: s.step)
+        case "reset": return .reset
+        case "settled": return .settled(try JSONDecoder.orbit.decode(TurnResponse.self, from: d))
         case "done":
             return .done(try JSONDecoder.orbit.decode(TurnResponse.self, from: d))
         case "error":

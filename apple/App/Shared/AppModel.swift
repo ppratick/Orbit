@@ -31,6 +31,8 @@ final class AppModel: NSObject, ObservableObject {
     private var loop: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
     private var lastContextUpload = Date.distantPast
+    private var lastModelCheck = Date.distantPast
+    private var checkingModels = false
     #if canImport(EventKit)
     let eventKit = EventKitExecutor()
     #endif
@@ -158,6 +160,9 @@ final class AppModel: NSObject, ObservableObject {
         // assistant sees the change (and its ids) on the next turn, then pull the posted result.
         if ran > 0 || Date().timeIntervalSince(lastContextUpload) > 15 * 60 { await uploadContext() }
         if ran > 0 { await store.sync(using: api) }
+        if Date().timeIntervalSince(lastModelCheck) > 6 * 60 * 60 {
+            await refreshModelInfo(verify: true)
+        }
     }
 
     func registerCapabilities() async {
@@ -181,7 +186,21 @@ final class AppModel: NSObject, ObservableObject {
 
     func refreshModelInfo(verify: Bool = false) async {
         guard let api else { return }
-        do { modelInfo = try await api.modelInfo(verify: verify) } catch { if verify { banner = error.localizedDescription } }
+        guard !checkingModels else { return }
+        checkingModels = true
+        defer { checkingModels = false }
+        do {
+            var info = try await api.modelInfo(verify: verify)
+            if verify { lastModelCheck = Date() }
+            else if info.basicModel == modelInfo?.basicModel && info.advancedModel == modelInfo?.advancedModel {
+                info.verified = modelInfo?.verified
+                info.catalog = modelInfo?.catalog
+                info.verifyError = modelInfo?.verifyError
+            }
+            modelInfo = info
+        } catch {
+            if verify { lastModelCheck = Date().addingTimeInterval(-5 * 60 * 60) }
+        }
     }
 
     // MARK: Chat
@@ -203,10 +222,24 @@ final class AppModel: NSObject, ObservableObject {
     /// Sends a message. The client message id makes retries safe: the server replays the stored reply
     /// instead of re-running the turn (no duplicate drafts/tasks after a dropped connection).
     func send(_ text: String, in conversationId: String, clientId: String = UUID().uuidString) async {
-        guard let api, !sending.contains(conversationId), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let api, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         failedSend[conversationId] = nil
-        let local = Message(id: "local-\(clientId)", conversationId: conversationId, role: "user", content: text, meta: nil, createdAt: Int64(Date().timeIntervalSince1970 * 1000))
+        let local = Message(id: "local-\(clientId)", conversationId: conversationId, role: "user", content: text, meta: nil, createdAt: Int64(Date().timeIntervalSince1970 * 1000), clientMsgId: clientId)
         store.upsert(messages: [local], conversationId: conversationId)
+        // Follow-ups are stored immediately. The server's single conversation owner
+        // decides whether to steer the active run or queue independent work.
+        if sending.contains(conversationId) {
+            do {
+                let response = try await api.sendMessage(conversationId: conversationId, content: text, clientMessageId: clientId)
+                store.upsert(messages: response.messages, conversationId: conversationId)
+                await store.sync(using: api)
+                store.removeMessage(local.id)
+            } catch {
+                failedSend[conversationId] = (text, clientId)
+                banner = "Couldn’t confirm your follow-up: \(error.localizedDescription)"
+            }
+            return
+        }
         sending.insert(conversationId)
         streaming[conversationId] = ""
         defer {
@@ -225,6 +258,10 @@ final class AppModel: NSObject, ObservableObject {
                         streaming[conversationId] = "" // text before a tool call was a preamble; the final answer follows
                         turnStatus[conversationId] = "Using \(name.replacingOccurrences(of: "_", with: " "))…"
                     }
+                case .reset: streaming[conversationId] = ""
+                case .settled(let r):
+                    streaming[conversationId] = ""
+                    store.upsert(messages: r.messages, conversationId: conversationId)
                 case .done(let r): final = r
                 }
             }
@@ -267,6 +304,16 @@ final class AppModel: NSObject, ObservableObject {
         } catch {
             banner = error.localizedDescription
         }
+    }
+
+    func removeDevice(_ device: DeviceInfo) async {
+        guard let api else { return }
+        do {
+            let current = try await api.currentDeviceId()
+            try await api.removeDevice(id: device.id)
+            if device.id == current { unpair() }
+            else { await store.sync(using: api) }
+        } catch { banner = error.localizedDescription }
     }
 
     func perform(_ op: @escaping (APIClient) async throws -> Void) async {

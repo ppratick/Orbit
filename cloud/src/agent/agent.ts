@@ -7,6 +7,8 @@ import { chooseModel } from "./router";
 import { toPlainText } from "../plaintext";
 import { toolsFor, type ToolCtx } from "./tools";
 
+import { ConversationInbox, type InboxMessage } from "./inbox";
+
 const MAX_STEPS = 6;
 const HISTORY = 40;
 
@@ -111,12 +113,13 @@ export function historyToInput(rows: MsgRow[]): InputItem[] {
 }
 
 /** Streaming hooks: text deltas and tool progress, sent to the client as server-sent events. */
-export type TurnEmitter = (event: "delta" | "tool" | "status", data: Record<string, unknown>) => void | Promise<void>;
+export type TurnEmitter = (event: "delta" | "tool" | "status" | "reset" | "settled", data: Record<string, unknown>) => void | Promise<void>;
 
 export interface TurnResult {
   user_message_id: string;
   messages: { id: string; role: string; content: string; meta: unknown; created_at: number }[];
   replayed: boolean;
+  queued?: boolean;
 }
 
 /**
@@ -132,35 +135,116 @@ export async function runTurn(
   role: "user" | "system" = "user",
   emit?: TurnEmitter,
 ): Promise<TurnResult> {
+  if (!(await env.DB.prepare("SELECT id FROM conversations WHERE id = ?").bind(conversationId).first())) {
+    throw new HttpError(404, "Conversation not found", "not_found");
+  }
+  const id = newId("msg"), created = now();
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO messages (id, conversation_id, role, content, device_id, client_msg_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(client_msg_id) DO NOTHING")
+      .bind(id, conversationId, role, userText, deviceId, clientMsgId, created),
+    env.DB.prepare("INSERT INTO chat_inbox (message_id, conversation_id, created_at) SELECT id, conversation_id, created_at FROM messages WHERE id = ?").bind(id),
+  ]);
+  const submitted = clientMsgId ? await env.DB.prepare("SELECT id FROM messages WHERE client_msg_id = ? AND conversation_id = ?").bind(clientMsgId, conversationId).first<{ id: string }>() : { id };
+  if (!submitted) throw new HttpError(409, "Message id belongs to a different conversation", "conflict");
+  const state = await env.DB.prepare("SELECT state, turn_id FROM chat_inbox WHERE message_id = ?").bind(submitted.id).first<{ state: string; turn_id: string | null }>();
+  if (!state || state.state === "done") {
+    const replies = await env.DB.prepare("SELECT id, role, content, meta, created_at FROM messages WHERE reply_to = ? ORDER BY created_at, rowid").bind(state?.turn_id ?? submitted.id).all<MsgRow>();
+    return { user_message_id: submitted.id, messages: replies.results.map(publicMsg), replayed: true };
+  }
+  const inbox = new ConversationInbox(env, conversationId);
+  if (!(await inbox.acquire())) return { user_message_id: submitted.id, messages: [], replayed: false, queued: true };
+  const messages = await drainInbox(inbox, emit);
+  return { user_message_id: submitted.id, messages, replayed: false };
+}
+
+async function drainInbox(inbox: ConversationInbox, emit?: TurnEmitter): Promise<TurnResult["messages"]> {
+  const messages: TurnResult["messages"] = [];
+  try {
+    await inbox.recoverInterrupted();
+    for (;;) {
+      const root = await inbox.next();
+      if (!root) break;
+      await inbox.renew();
+      await inbox.begin(root.id);
+      await emit?.("reset", {});
+      const result = await executeTurn(inbox, root, emit);
+      messages.push(...result.messages);
+      await emit?.("settled", { ...result });
+      break; // Each queued request gets a fresh Worker invocation and D1 query budget.
+    }
+  } finally { await inbox.release(); }
+  if (await inbox.next()) messages.push(...await continueConversation(inbox.env, inbox.conversationId, emit));
+  return messages;
+}
+
+/** Resume pending messages after a crashed Worker without replaying an interrupted action. */
+export async function resumeConversations(env: Env) {
+  const rows = await env.DB.prepare(`SELECT DISTINCT q.conversation_id FROM chat_inbox q LEFT JOIN chat_leases l ON l.conversation_id = q.conversation_id
+    WHERE q.state != 'done' AND (l.owner_id IS NULL OR l.expires_at < ?) LIMIT 5`).bind(now()).all<{ conversation_id: string }>();
+  for (const row of rows.results) await continueConversation(env, row.conversation_id);
+}
+
+export async function resumeConversation(env: Env, conversationId: string, emit?: TurnEmitter): Promise<TurnResult> {
+  const inbox = new ConversationInbox(env, conversationId);
+  if (!(await inbox.acquire())) return { user_message_id: "", messages: [], replayed: false, queued: true };
+  return { user_message_id: "", messages: await drainInbox(inbox, emit), replayed: false };
+}
+
+async function continueConversation(env: Env, conversationId: string, emit?: TurnEmitter): Promise<TurnResult["messages"]> {
+  // The URL is the owner's configured Orbit Worker, never model-controlled.
+  if (!env.PUBLIC_BASE_URL) return [];
+  try {
+    const request = new Request(new URL(`/v1/conversations/${encodeURIComponent(conversationId)}/resume`, env.PUBLIC_BASE_URL), {
+      method: "POST", headers: { authorization: `Bearer ${env.ADMIN_TOKEN}`, accept: "text/event-stream", "user-agent": "Orbit/0.1" },
+    });
+    const response = env.SELF ? await env.SELF.fetch(request) : await fetch(request);
+    if (!response.ok || !response.body) throw new Error(`Continuation HTTP ${response.status}`);
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "", result: TurnResult["messages"] = [];
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let split: number;
+      while ((split = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, split); buffer = buffer.slice(split + 2);
+        const event = frame.split("\n").find((l) => l.startsWith("event:"))?.slice(6).trim();
+        const raw = frame.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        if (event === "done") result = (data as TurnResult).messages;
+        else if (event === "delta" || event === "tool" || event === "status" || event === "reset" || event === "settled") await emit?.(event, data);
+        else if (event === "error") throw new Error(String(data.message));
+      }
+    }
+    return result;
+  } catch (error) {
+    // The message stays in D1 and cron can recover it. Never replay a completed turn.
+    console.error("chat continuation", String(error));
+    return [];
+  }
+}
+
+async function executeTurn(inbox: ConversationInbox, root: InboxMessage, emit?: TurnEmitter): Promise<TurnResult> {
+  const env = inbox.env, conversationId = inbox.conversationId, userMsgId = root.id, t0 = root.created_at;
+  let userText = root.content;
+  const role = root.role;
   const conv = await env.DB.prepare("SELECT id, title FROM conversations WHERE id = ?").bind(conversationId).first<{ id: string; title: string }>();
   if (!conv) throw new HttpError(404, "Conversation not found", "not_found");
-
-  if (clientMsgId) {
-    const prior = await env.DB.prepare("SELECT id FROM messages WHERE client_msg_id = ?").bind(clientMsgId).first<{ id: string }>();
-    if (prior) {
-      const replies = await env.DB.prepare("SELECT id, role, content, meta, created_at FROM messages WHERE reply_to = ? ORDER BY created_at, rowid").bind(prior.id).all<MsgRow>();
-      return { user_message_id: prior.id, messages: replies.results.map(publicMsg), replayed: true };
-    }
-  }
-
-  const userMsgId = newId("msg");
-  const t0 = now();
-  const ins = await env.DB.prepare(
-    "INSERT INTO messages (id, conversation_id, role, content, device_id, client_msg_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(client_msg_id) DO NOTHING",
-  )
-    .bind(userMsgId, conversationId, role, userText, deviceId, clientMsgId, t0)
-    .run();
-  if (!ins.meta.changes) throw new HttpError(409, "This message is already being processed; retry shortly", "in_progress");
-
   const hist = await env.DB.prepare(
-    "SELECT id, role, content, meta, created_at FROM (SELECT rowid AS rid, * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?) ORDER BY created_at, rid",
+    `SELECT id, role, content, meta, created_at FROM (SELECT m.rowid AS rid, m.* FROM messages m
+      LEFT JOIN chat_inbox q ON q.message_id = m.id WHERE m.conversation_id = ? AND (q.state IS NULL OR q.state IN ('running','steering','done'))
+      ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?) ORDER BY created_at, rid`,
   )
     .bind(conversationId, HISTORY)
     .all<MsgRow>();
   const tctx = await toolContext(env, conversationId);
   const { defs, byName } = toolsFor(tctx);
   const instructions = await systemPrompt(env, tctx);
-  const input = historyToInput(hist.results);
+  // A queued request was typed before the previous answer finished, but is the
+  // request being worked now. Put it after that completed history for the model.
+  const input = historyToInput(hist.results.filter((m) => m.id !== root.id));
+  input.push({ role: root.role === "system" ? "developer" : "user", content: root.content });
 
   // Buffer writes and flush in one batch to stay within D1's per-invocation query budget.
   const pending: { id: string; role: string; content: string; meta: unknown; created_at: number }[] = [];
@@ -175,11 +259,34 @@ export async function runTurn(
   let finalText = "";
   let model = "";
   const deviceResult = role === "system";
+  const absorbFollowups = async () => {
+    const followups = await inbox.steering(root, input);
+    if (!followups.length) return false;
+    input.push({ role: "developer", content: "The user sent updates while you were working. Apply these to future work now. Do not repeat completed tools or undo completed actions without approval. If the user cancels, stop further work and say what already finished. Unrelated requests are handled separately." });
+    for (const message of followups) {
+      input.push({ role: "user", content: message.content });
+      userText += "\n" + message.content;
+    }
+    await emit?.("reset", {});
+    return true;
+  };
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
+      if (!inbox.budget.ok(12)) {
+        const summary = await respond(env, { model: model || env.OPENAI_MODEL_BASIC,
+          instructions: instructions + "\nThis run reached its work limit. Briefly state what finished and what remains; do not claim unexecuted actions happened.", input,
+          onDelta: emit ? (d) => emit("delta", { text: d }) : undefined });
+        finalText = summary.text;
+        break;
+      }
+      await absorbFollowups();
       model = chooseModel(env, "chat", { text: userText, step, deviceResult });
       await emit?.("status", { step, model });
       const res = await respond(env, { model, instructions, input, tools: defs, onDelta: emit ? (d) => emit("delta", { text: d }) : undefined });
+      if (await absorbFollowups()) {
+        if (step === MAX_STEPS - 1) finalText = "I received your update but reached this run’s limit. No further actions were taken.";
+        continue;
+      }
       if (!res.calls.length) {
         finalText = res.text.trim() || "(no response)";
         break;
@@ -190,11 +297,15 @@ export async function runTurn(
         if (i === 0) for (const r of res.reasoning) input.push(r as InputItem);
         input.push({ type: "function_call", call_id: c.call_id, name: c.name, arguments: c.arguments, ...(c.namespace ? { namespace: c.namespace } : {}) });
       });
+      let interrupted = false;
       for (const c of res.calls) {
+        if (!inbox.budget.ok(12)) interrupted = true;
+        else if (!interrupted && c !== res.calls[0]) interrupted = await absorbFollowups();
         let output: string;
         const tool = byName.get(c.name);
         await emit?.("tool", { name: c.name, state: "running" });
-        if (!tool) output = `Error: unknown or unavailable tool ${c.name}`;
+        if (interrupted) output = "Not executed: the user updated the task. Reconsider this action using the latest instructions.";
+        else if (!tool) output = `Error: unknown or unavailable tool ${c.name}`;
         else {
           try {
             const args = parseJson<Record<string, unknown>>(c.arguments, {});
@@ -212,6 +323,7 @@ export async function runTurn(
   } catch (e) {
     finalText = `Sorry — I couldn't get a response: ${friendlyError(e)}`;
   }
+  await inbox.renew();
   push("assistant", toPlainText(finalText), model ? { model } : null);
 
   // A fast device can finish a task this turn queued (and post its result) before the turn ends.
@@ -237,6 +349,7 @@ export async function runTurn(
       ),
     ),
     env.DB.prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?").bind(title, now(), conversationId),
+    env.DB.prepare("UPDATE chat_inbox SET state = 'done' WHERE turn_id = ?").bind(userMsgId),
   ]);
   return { user_message_id: userMsgId, messages: pending.map((m) => ({ ...m })), replayed: false };
 }

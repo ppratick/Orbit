@@ -37,6 +37,28 @@ final class OrbitKitTests: XCTestCase {
         XCTAssertEqual(restored.chat(OrbitStore.mainConversationId).count, 2, "Sync relocation must not duplicate or hide existing messages")
     }
 
+    @MainActor
+    func testServerAcknowledgementReplacesOptimisticMessageWhileReplyIsPending() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = OrbitStore(directory: directory)
+        let conversation = OrbitStore.mainConversationId
+        let local = Message(id: "local-send-1", conversationId: conversation, role: "user", content: "Check email", meta: nil, createdAt: 1, clientMsgId: "send-1")
+        store.upsert(messages: [local], conversationId: conversation)
+        let json = """
+        {"id":"server-1","conversation_id":"conv_orbit_primary","role":"user","content":"Check email","meta":null,"created_at":2,"client_msg_id":"send-1"}
+        """
+        let acknowledged = try JSONDecoder.orbit.decode(Message.self, from: Data(json.utf8))
+        store.upsert(messages: [acknowledged], conversationId: conversation)
+        XCTAssertEqual(store.chat(conversation).map(\.id), ["server-1"])
+        // Repeated sync or retry must not bring back the optimistic copy.
+        store.upsert(messages: [local, acknowledged], conversationId: conversation)
+        XCTAssertEqual(store.chat(conversation).map(\.id), ["server-1"])
+        let repeated = Message(id: "local-send-2", conversationId: conversation, role: "user", content: "Check email", meta: nil, createdAt: 3, clientMsgId: "send-2")
+        store.upsert(messages: [repeated], conversationId: conversation)
+        XCTAssertEqual(store.chat(conversation).count, 2, "Identical text sent separately must remain separate")
+    }
+
     func testISOParsing() {
         XCTAssertNotNil(ISO.parse("2026-11-13T09:00:00-05:00"))
         XCTAssertNotNil(ISO.parse("2026-11-13T14:00:00.123Z"))
@@ -92,6 +114,10 @@ final class SignInTests: XCTestCase {
     }
 
     func testParsesStreamEvents() throws {
+        if case .reset? = try APIClient.parseEvent("reset", "{}") {} else { XCTFail() }
+        if case .settled(let response)? = try APIClient.parseEvent("settled", #"{"user_message_id":"m","messages":[],"replayed":false}"#) {
+            XCTAssertEqual(response.userMessageId, "m")
+        } else { XCTFail() }
         if case .delta(let t)? = try APIClient.parseEvent("delta", #"{"text":"Hi"}"#) { XCTAssertEqual(t, "Hi") } else { XCTFail() }
         if case .tool(let n, let s)? = try APIClient.parseEvent("tool", #"{"name":"remember","state":"running"}"#) { XCTAssertEqual(n, "remember"); XCTAssertEqual(s, "running") } else { XCTFail() }
         XCTAssertThrowsError(try APIClient.parseEvent("error", #"{"code":"x","message":"boom"}"#))

@@ -39,7 +39,8 @@ struct SettingsView: View {
     @State private var signIn: ChatGPTSignIn?
     @State private var confirmUnpair = false
     @State private var syncing = false
-    @State private var verifying = false
+    @State private var deviceToRemove: DeviceInfo?
+    @State private var showAddAccounts = false
     @State private var expandedErrors: Set<String> = []
     @State private var copied = false
 
@@ -92,6 +93,15 @@ struct SettingsView: View {
             Button("Unpair", role: .destructive) { model.unpair() }
         } message: {
             Text("This device stops syncing and forgets its access. Your conversation and memory stay on your server.")
+        }
+        .confirmationDialog("Remove paired device?", isPresented: Binding(get: { deviceToRemove != nil }, set: { if !$0 { deviceToRemove = nil } }), titleVisibility: .visible) {
+            Button("Remove device", role: .destructive) {
+                guard let device = deviceToRemove else { return }
+                deviceToRemove = nil
+                Task { await model.removeDevice(device) }
+            }
+        } message: {
+            Text("\(deviceToRemove?.name ?? "This device") will stop syncing and running tasks. You can pair it again later.")
         }
         .task { await model.refreshModelInfo() }
     }
@@ -178,8 +188,7 @@ struct SettingsView: View {
     @ViewBuilder private var assistantSettings: some View {
         OrbitHero(symbol: "sparkle", tint: OrbitProvider.tint("chatgpt"), title: "Assistant",
                   detail: "Orbit thinks with your ChatGPT plan. Luna handles everyday requests; Sol takes on harder, multi-step work.")
-        OrbitGroup(header: "ChatGPT account",
-                     footer: "Uses your ChatGPT allowance. No API key or extra billing.") {
+        OrbitGroup(header: "ChatGPT account") {
             OrbitRow(symbol: "person.crop.circle.fill", tint: OrbitProvider.tint("chatgpt"),
                      title: chatGPTConnected ? (chatGPTAccount?.label ?? "Connected") : "Not connected",
                      subtitle: chatGPTConnected ? "Signed in" : "Sign in to let Orbit reply") {
@@ -210,27 +219,17 @@ struct SettingsView: View {
             }
             .padding(OrbitTheme.rowHorizontal)
         }
-        OrbitGroup(header: "Models", footer: modelFootnote) {
-            modelRow("Luna", detail: "Everyday tasks, quick replies", symbol: "moon.fill", tint: Color(red: 0.4, green: 0.45, blue: 0.95), verified: model.modelInfo?.verified?.basic)
+        OrbitGroup(header: "Models") {
+            modelRow("Luna", detail: fullModelName(model.modelInfo?.basicModel) ?? "Everyday tasks", symbol: "moon.fill", tint: Color(red: 0.4, green: 0.45, blue: 0.95), verified: model.modelInfo?.verified?.basic)
             OrbitRowDivider()
-            modelRow("Sol", detail: "Deeper reasoning and multi-step work", symbol: "sun.max.fill", tint: Color(red: 0.98, green: 0.62, blue: 0.2), verified: model.modelInfo?.verified?.advanced)
+            modelRow("Sol", detail: fullModelName(model.modelInfo?.advancedModel) ?? "Deeper reasoning", symbol: "sun.max.fill", tint: Color(red: 0.98, green: 0.62, blue: 0.2), verified: model.modelInfo?.verified?.advanced)
             if let error = model.modelInfo?.verifyError { errorRow(id: "verify", error) }
-            OrbitRowDivider(inset: 0)
-            Button {
-                verifying = true
-                Task { await model.refreshModelInfo(verify: true); verifying = false }
-            } label: {
-                OrbitRow(title: verifying ? "Checking…" : "Check availability", titleColor: .accentColor) {
-                    if verifying { ProgressView().controlSize(.small) }
-                }
-            }
-            .buttonStyle(OrbitRowButtonStyle()).disabled(verifying)
         }
     }
 
-    private var modelFootnote: String? {
-        guard let info = model.modelInfo else { return nil }
-        return "Automatic routing picks a model per message. Type /luna or /sol to choose. Using \(info.basicModel) and \(info.advancedModel)."
+    private func fullModelName(_ slug: String?) -> String? {
+        guard let slug else { return nil }
+        return model.modelInfo?.catalog?.first { $0.slug == slug }?.displayName ?? slug
     }
 
     private func modelRow(_ title: String, detail: String, symbol: String, tint: Color, verified: Bool?) -> some View {
@@ -247,16 +246,19 @@ struct SettingsView: View {
     // MARK: Connections
 
     @ViewBuilder private var connectionSettings: some View {
-        if !connectedAccounts.isEmpty {
-            OrbitGroup(header: "Connected") {
-                ForEach(Array(connectedAccounts.enumerated()), id: \.element.id) { index, account in
-                    if index > 0 { OrbitRowDivider() }
-                    accountRow(account)
+        ForEach(["google", "icloud_mail", "github", "canvas"], id: \.self) { provider in
+            let accounts = connectedAccounts.filter { $0.provider == provider }
+            if !accounts.isEmpty {
+                OrbitGroup(header: provider == "google" ? "Gmail & Drive" : OrbitProvider.name(provider)) {
+                    ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
+                        if index > 0 { OrbitRowDivider(inset: OrbitTheme.rowHorizontal) }
+                        accountRow(account)
+                    }
                 }
             }
         }
-        OrbitGroup(header: connectedAccounts.isEmpty ? "Connect an account" : "Add another",
-                     footer: "Orbit reads what you connect so it can help. Sending, posting and submitting always wait for your approval.") {
+        DisclosureGroup(isExpanded: $showAddAccounts) {
+            OrbitGroup() {
             Button {
                 Task {
                     guard let api = model.api else { return }
@@ -272,7 +274,13 @@ struct SettingsView: View {
             providerLink(.github, provider: "github", subtitle: "Issues, pull requests and code")
             OrbitRowDivider()
             providerLink(.canvas, provider: "canvas", subtitle: "Courses and deadlines")
+            }
+            .padding(.top, 12)
+        } label: {
+            Label("Add an account", systemImage: "plus.circle")
+                .font(OrbitTheme.body).foregroundStyle(.primary)
         }
+        .tint(.secondary)
     }
 
     private func providerLink(_ destination: SettingsDestination, provider: String, subtitle: String) -> some View {
@@ -283,9 +291,8 @@ struct SettingsView: View {
 
     private func accountRow(_ account: Account) -> some View {
         VStack(spacing: 0) {
-            OrbitRow(symbol: OrbitProvider.symbol(account.provider), tint: OrbitProvider.tint(account.provider),
-                     title: account.label.isEmpty ? OrbitProvider.name(account.provider) : account.label,
-                     subtitle: accountSubtitle(account)) {
+            OrbitRow(title: account.label.isEmpty ? OrbitProvider.name(account.provider) : account.label,
+                     subtitle: account.lastError == nil ? "Connected" : "Needs attention") {
                 if account.lastError != nil { OrbitBadge(text: "Issue", tint: .orange) }
                 Menu {
                     Button("Disconnect", role: .destructive) { Task { await model.perform { try await $0.disconnect(accountId: account.id) } } }
@@ -298,12 +305,6 @@ struct SettingsView: View {
             }
             if let error = account.lastError { errorRow(id: account.id, error) }
         }
-    }
-
-    private func accountSubtitle(_ account: Account) -> String {
-        var parts = [OrbitProvider.name(account.provider)]
-        if let synced = account.lastSyncAt { parts.append("synced \(synced.date.formatted(.relative(presentation: .named)))") }
-        return parts.joined(separator: " · ")
     }
 
     // MARK: Integration forms
@@ -380,6 +381,14 @@ struct SettingsView: View {
                     if let seen = device.lastSeenAt?.date, Date().timeIntervalSince(seen) < 5 * 60 {
                         OrbitBadge(text: "Online", tint: .green)
                     }
+                    Menu {
+                        Button("Remove device", role: .destructive) { deviceToRemove = device }
+                    } label: {
+                        Image(systemName: "ellipsis").frame(width: 30, height: 30)
+                            .contentShape(Rectangle())
+                    }
+                    .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                    .accessibilityLabel("Options for \(device.name)")
                 }
             }
         }

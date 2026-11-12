@@ -2,7 +2,7 @@ import { mainConversation, MAIN_CONVERSATION_ID } from "./conversation";
 import type { Env } from "./env";
 import { HttpError, json, readJson, Router, str } from "./http";
 import { authenticate, createPairingCode, redeemPairingCode, registerDevice, type Principal } from "./auth";
-import { runTurn } from "./agent/agent";
+import { runTurn, resumeConversation } from "./agent/agent";
 import { addMemory, deleteMemory, exportMarkdown, listMemories, listResponsibilities, searchConversations, updateMemory, updateResponsibility, upsertResponsibility } from "./memory";
 import { cancelTask, claimDeviceTasks, completeTask, createTask, decideApproval, extendLease, FOLLOW_UP_ACTIONS, recoverExpired, type TaskRow } from "./tasks";
 import { ACTIONS } from "./policy";
@@ -110,17 +110,22 @@ router.on("GET", "/v1/conversations/:id/messages", async (r, p, c) => {
     .all<Record<string, unknown>>();
   return json({ messages: rows.results.map(({ rid: _r, ...m }) => ({ ...m, meta: parseJson(m.meta as string, null) })) });
 });
-router.on("POST", "/v1/conversations/:id/messages", async (r, p, c) => {
-  const b = await readJson<{ content: string; client_msg_id?: string }>(r);
-  const content = str(b.content, "content", { max: 20000 });
+router.on("POST", "/v1/conversations/:id/messages", async (r, p, c) => chatRequest(r, p.id, c, false));
+router.on("POST", "/v1/conversations/:id/resume", async (r, p, c) => {
+  requireAdmin(c);
+  return chatRequest(r, p.id, c, true);
+});
+async function chatRequest(r: Request, conversationId: string, c: Ctx, resume: boolean) {
+  const b = resume ? { content: "", client_msg_id: undefined } : await readJson<{ content: string; client_msg_id?: string }>(r);
+  const content = resume ? "" : str(b.content, "content", { max: 20000 });
   const clientId = b.client_msg_id ? String(b.client_msg_id).slice(0, 80) : null;
   if (!(r.headers.get("accept") ?? "").includes("text/event-stream")) {
-    const res = await runTurn(c.env, p.id, content, clientId, deviceId(c));
+    const res = resume ? await resumeConversation(c.env, conversationId) : await runTurn(c.env, conversationId, content, clientId, deviceId(c));
     return json(res, res.replayed ? 200 : 201);
   }
   // Streaming reply (server-sent events): status/tool/delta events while the turn runs, then `done`
   // with the stored messages (the source of truth), or `error`.
-  if (!(await c.env.DB.prepare("SELECT 1 FROM conversations WHERE id = ?").bind(p.id).first())) throw new HttpError(404, "Conversation not found", "not_found");
+  if (!(await c.env.DB.prepare("SELECT 1 FROM conversations WHERE id = ?").bind(conversationId).first())) throw new HttpError(404, "Conversation not found", "not_found");
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
   const writer = writable.getWriter();
   const enc = new TextEncoder();
@@ -135,7 +140,7 @@ router.on("POST", "/v1/conversations/:id/messages", async (r, p, c) => {
   };
   const work = (async () => {
     try {
-      const res = await runTurn(c.env, p.id, content, clientId, deviceId(c), "user", send);
+      const res = resume ? await resumeConversation(c.env, conversationId, send) : await runTurn(c.env, conversationId, content, clientId, deviceId(c), "user", send);
       await send("done", res);
     } catch (e) {
       await send("error", e instanceof HttpError ? { code: e.code, message: e.message } : { code: "internal", message: e instanceof Error ? e.message : String(e) });
@@ -145,7 +150,7 @@ router.on("POST", "/v1/conversations/:id/messages", async (r, p, c) => {
   })();
   c.exec.waitUntil(work);
   return new Response(readable, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "x-accel-buffering": "no" } });
-});
+}
 router.on("GET", "/v1/search", async (r, _p, c) => {
   const q = new URL(r.url).searchParams.get("q") ?? "";
   return json({ results: await searchConversations(c.env, q, 30) });
