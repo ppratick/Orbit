@@ -1,12 +1,12 @@
 import type { Env } from "../env";
-import { authMode, LlmAuthError, noteFallback, resolveAuth, type LlmAuth } from "./llmauth";
+import { resolveAuth, type LlmAuth } from "./llmauth";
 
 /**
  * OpenAI Responses API client, streaming.
  *
  * ChatGPT plan usage (Sign in with ChatGPT) requires: stream=true, store=false, history sent in `input`,
  * no max_output_tokens/temperature/etc., function tools grouped in a namespace, and success only on
- * `response.completed`. We follow those rules for every request so both auth modes behave the same.
+ * `response.completed`. We follow those rules for every request for ChatGPT plan usage.
  * https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
  */
 export type InputItem =
@@ -37,7 +37,7 @@ export interface LlmResult {
   calls: LlmCall[];
   reasoning: Record<string, unknown>[];
   usage?: { input_tokens?: number; output_tokens?: number };
-  via: "chatgpt" | "api_key";
+  via: "chatgpt";
   model: string;
 }
 
@@ -191,16 +191,5 @@ async function viaChatgpt(env: Env, req: Req): Promise<LlmResult> {
 }
 
 export async function respond(env: Env, req: Req): Promise<LlmResult> {
-  const mode = authMode(env);
-  if (mode === "api_key") return call(env, await resolveAuth(env, "api_key"), req);
-  if (mode === "chatgpt") return viaChatgpt(env, req);
-  // chatgpt_then_api_key — the paid fallback; never the default, always logged.
-  try {
-    return await viaChatgpt(env, req);
-  } catch (e) {
-    const fallbackable = e instanceof LlmAuthError || (e instanceof LlmError && ([401, 403, 429].includes(e.status) || e.code.startsWith("subscription_sharing_")));
-    if (!fallbackable || !env.OPENAI_API_KEY) throw e;
-    await noteFallback(env, e instanceof Error ? e.message : String(e));
-    return call(env, await resolveAuth(env, "api_key"), req);
-  }
+  return viaChatgpt(env, req);
 }

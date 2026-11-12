@@ -19,6 +19,24 @@ final class OrbitKitTests: XCTestCase {
         XCTAssertEqual(r.deleted["message"], ["msg_x"])
     }
 
+    @MainActor
+    func testOngoingHistorySurvivesOfflineCacheAndConversationRelocation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = OrbitStore(directory: directory)
+        let original = Message(id: "original", conversationId: "old-chat", role: "user", content: "Keep this", meta: nil, createdAt: 1)
+        let briefing = Message(id: "briefing", conversationId: "old-briefings", role: "assistant", content: "Today", meta: nil, createdAt: 2)
+        store.upsert(messages: [original], conversationId: "old-chat")
+        store.upsert(messages: [briefing], conversationId: "old-briefings")
+        store.save()
+        let restored = OrbitStore(directory: directory)
+        XCTAssertEqual(restored.chat(OrbitStore.mainConversationId).map(\.id), ["original", "briefing"])
+        var relocated = original
+        relocated.conversationId = OrbitStore.mainConversationId
+        restored.upsert(messages: [relocated], conversationId: OrbitStore.mainConversationId)
+        XCTAssertEqual(restored.chat(OrbitStore.mainConversationId).count, 2, "Sync relocation must not duplicate or hide existing messages")
+    }
+
     func testISOParsing() {
         XCTAssertNotNil(ISO.parse("2026-11-13T09:00:00-05:00"))
         XCTAssertNotNil(ISO.parse("2026-11-13T14:00:00.123Z"))

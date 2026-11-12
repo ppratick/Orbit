@@ -44,5 +44,9 @@
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Orbit uses your microphone to dictate messages into the chat draft.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Orbit transcribes your speech into a message you can review before sending.</string>
 </dict>
 </plist>

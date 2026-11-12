@@ -1,6 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "orbit",
+  "account_id": "9825d44dc1fece5fca3cc36e35403660",
+  "workers_dev": true,
+  "preview_urls": false,
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -12,8 +15,7 @@
     {
       "binding": "DB",
       "database_name": "orbit",
-      // Replace with the id printed by `wrangler d1 create orbit` before deploying.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "8bc78c09-f493-41c1-9446-db058120c68b",
       "migrations_dir": "migrations"
     }
   ],
@@ -21,8 +23,6 @@
     // Model IDs per OpenAI's model docs; check against your account with GET /v1/model?verify=1.
     "OPENAI_MODEL_BASIC": "gpt-6-luna",
     "OPENAI_MODEL_ADVANCED": "gpt-6.1-sol",
-    // chatgpt = Sign in with ChatGPT only. The paid API fallback (chatgpt_then_api_key) stays off.
-    "OPENAI_AUTH_MODE": "chatgpt",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "ORBIT_TIMEZONE": "America/New_York",
     "ORBIT_CALENDAR_NAME": "Orbit"

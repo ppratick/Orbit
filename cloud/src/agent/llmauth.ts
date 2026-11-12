@@ -38,12 +38,6 @@ export interface ChatgptSecret {
   expires_at?: number;
 }
 
-export type AuthMode = "chatgpt" | "api_key" | "chatgpt_then_api_key";
-export function authMode(env: Env): AuthMode {
-  const m = env.OPENAI_AUTH_MODE as AuthMode | undefined;
-  return m === "api_key" || m === "chatgpt_then_api_key" ? m : "chatgpt";
-}
-
 export class LlmAuthError extends Error {
   constructor(message: string, public code = "auth") {
     super(message);
@@ -227,17 +221,13 @@ async function refresh(env: Env, acct: AccountRow, sec: ChatgptSecret): Promise<
 }
 
 export interface LlmAuth {
-  mode: "chatgpt" | "api_key";
+  mode: "chatgpt";
   baseUrl: string;
   bearer: string;
   accountId?: string;
 }
 
-export async function resolveAuth(env: Env, preferred: "chatgpt" | "api_key", forceRefresh = false): Promise<LlmAuth> {
-  if (preferred === "api_key") {
-    if (!env.OPENAI_API_KEY) throw new LlmAuthError("OPENAI_API_KEY is not configured", "no_api_key");
-    return { mode: "api_key", baseUrl: env.OPENAI_BASE_URL, bearer: env.OPENAI_API_KEY };
-  }
+export async function resolveAuth(env: Env, _preferred: "chatgpt", forceRefresh = false): Promise<LlmAuth> {
   const acct = await chatgptAccount(env);
   if (!acct) throw new LlmAuthError("Sign in with ChatGPT in Orbit's Settings to enable the assistant", "signin_required");
   if (acct.status === "signed_out") throw new LlmAuthError("Signed out of ChatGPT; sign in again in Orbit's Settings", "signin_required");
@@ -248,9 +238,6 @@ export async function resolveAuth(env: Env, preferred: "chatgpt" | "api_key", fo
 }
 
 export async function llmConfigured(env: Env): Promise<boolean> {
-  const mode = authMode(env);
-  if (mode !== "chatgpt" && env.OPENAI_API_KEY) return true;
-  if (mode === "api_key") return false;
   return !!(await chatgptAccount(env, false));
 }
 
@@ -284,15 +271,10 @@ export async function signOut(env: Env): Promise<{ revoked: boolean }> {
 
 /** The signed-in account's model catalog (verifies which model IDs this account can use). */
 export async function modelCatalog(env: Env): Promise<{ slug: string; display_name?: string }[]> {
-  const auth = await resolveAuth(env, authMode(env) === "api_key" ? "api_key" : "chatgpt");
+  const auth = await resolveAuth(env, "chatgpt");
   const r = await fetch(`${auth.baseUrl}/models`, { headers: { authorization: `Bearer ${auth.bearer}` } });
   if (!r.ok) throw new Error(`Model list failed: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
   const j = (await r.json()) as { models?: { slug: string; display_name?: string; visibility?: string }[]; data?: { id: string }[] };
   if (j.models) return j.models.filter((m) => !m.visibility || m.visibility === "list").map((m) => ({ slug: m.slug, display_name: m.display_name }));
   return (j.data ?? []).map((m) => ({ slug: m.id }));
-}
-
-export async function noteFallback(env: Env, reason: string) {
-  console.warn("llm fallback to API key:", reason);
-  await logActivity(env, "llm.fallback", `ChatGPT plan usage unavailable; used the paid API key instead (${reason.slice(0, 160)})`);
 }

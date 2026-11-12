@@ -77,6 +77,10 @@ public final class APIClient: @unchecked Sendable {
 
     public func sync(since: Int64) async throws -> SyncResponse { try await send("GET", "v1/sync", query: ["since": String(since)]) }
 
+    public func mainConversation() async throws -> Conversation {
+        try await send("POST", "v1/conversation")
+    }
+
     public func createConversation(id: String? = nil) async throws -> Conversation {
         try await send("POST", "v1/conversations", body: ["id": id ?? ""])
     }
@@ -188,7 +192,6 @@ public final class APIClient: @unchecked Sendable {
         public var advancedModel: String
         public var authMode: String
         public var chatgptAccounts: [Account]
-        public var apiKeyConfigured: Bool
         public var verified: Verified?
         public var catalog: [CatalogModel]?
         public var verifyError: String?

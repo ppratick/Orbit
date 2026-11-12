@@ -16,12 +16,10 @@ const cwd = fileURLToPath(new URL("../..", import.meta.url));
 const vars = {
   ADMIN_TOKEN: ADMIN,
   ENCRYPTION_KEY: randomBytes(32).toString("base64"),
-  OPENAI_API_KEY: "test-key",
   OPENAI_BASE_URL: `http://127.0.0.1:${MOCK}/v1`,
   PUBLIC_BASE_URL: BASE,
   GOOGLE_CLIENT_ID: "test-client.apps.googleusercontent.com",
   // Production default: Sign in with ChatGPT only; the paid API key must never be used.
-  OPENAI_AUTH_MODE: "chatgpt",
   SIWC_ISSUER: `http://127.0.0.1:${MOCK}`,
   CHATGPT_RESPONSES_BASE_URL: `http://127.0.0.1:${MOCK}/v1`,
 };
@@ -86,6 +84,18 @@ try {
     const caps = await api("/v1/devices/me", { method: "PUT", token: mac, body: { capabilities: ["calendar.create_event", "calendar.update_event", "reminders.create", "mac.read_file", "bogus.action"] } });
     assert.deepEqual(caps.body.capabilities, ["calendar.create_event", "calendar.update_event", "reminders.create", "mac.read_file"]);
     await api("/v1/devices/me", { method: "PUT", token: phone, body: { capabilities: ["calendar.create_event", "reminders.create"] } });
+  });
+  await step("Mac and iPhone reopen the same persistent conversation without creating duplicates", async () => {
+    const first = await api("/v1/conversation", { method: "POST", token: mac });
+    const second = await api("/v1/conversation", { method: "POST", token: phone });
+    assert.equal(first.status, 200);
+    assert.equal(first.body.id, "conv_orbit_primary");
+    assert.equal(second.body.id, first.body.id);
+    assert.equal(second.body.created_at, first.body.created_at);
+    const list = (await api("/v1/conversations", { token: mac })).body.conversations;
+    assert.equal(list.filter(c => c.id === first.body.id).length, 1);
+    assert.equal((await api(`/v1/conversations/${first.body.id}`, { method: "DELETE", token: mac })).status, 400);
+    assert.equal((await api(`/v1/conversations/${first.body.id}`, { method: "PATCH", token: mac, body: { archived: true } })).status, 400);
   });
   await step("before sign-in, chat says to sign in with ChatGPT (no paid fallback)", async () => {
     const c = (await api("/v1/conversations", { method: "POST", token: mac, body: {} })).body.id;

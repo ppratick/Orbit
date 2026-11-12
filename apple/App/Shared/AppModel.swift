@@ -15,6 +15,9 @@ final class AppModel: NSObject, ObservableObject {
     @Published private(set) var isPaired = false
     @Published var sending: Set<String> = []          // conversation ids with a turn in flight
     @Published var failedSend: [String: (text: String, clientId: String)] = [:]
+    @Published var chatDraft = ""
+    @Published var mainConversationId: String?
+    @Published var openingConversation = false
     @Published var banner: String?
     @Published var modelInfo: APIClient.ModelInfo?
     /// Live text of a reply that is still streaming, per conversation.
@@ -50,6 +53,10 @@ final class AppModel: NSObject, ObservableObject {
     private func configure(url: URL, token: String) {
         let api = APIClient(baseURL: url, token: token)
         self.api = api
+        // Keep the conversation readable offline, including cached history awaiting migration.
+        if !store.messages.isEmpty || store.conversations[OrbitStore.mainConversationId] != nil {
+            mainConversationId = OrbitStore.mainConversationId
+        }
         var executors: [DeviceExecutor] = []
         #if canImport(EventKit)
         executors.append(eventKit)
@@ -107,6 +114,8 @@ final class AppModel: NSObject, ObservableObject {
         runner = nil
         store.clear()
         store.save()
+        chatDraft = ""
+        mainConversationId = nil
         isPaired = false
     }
 
@@ -169,22 +178,24 @@ final class AppModel: NSObject, ObservableObject {
 
     // MARK: Chat
 
-    func newConversation() async -> String? {
-        guard let api else { return nil }
+    func openMainConversation() async {
+        guard let api, !openingConversation else { return }
+        openingConversation = true
+        defer { openingConversation = false }
         do {
-            let c = try await api.createConversation()
-            store.upsert(conversation: c)
-            return c.id
+            let conversation = try await api.mainConversation()
+            store.upsert(conversation: conversation)
+            mainConversationId = conversation.id
+            await store.sync(using: api)
         } catch {
-            banner = error.localizedDescription
-            return nil
+            banner = "Couldn’t open your conversation: \(error.localizedDescription)"
         }
     }
 
     /// Sends a message. The client message id makes retries safe: the server replays the stored reply
     /// instead of re-running the turn (no duplicate drafts/tasks after a dropped connection).
     func send(_ text: String, in conversationId: String, clientId: String = UUID().uuidString) async {
-        guard let api, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let api, !sending.contains(conversationId), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         failedSend[conversationId] = nil
         let local = Message(id: "local-\(clientId)", conversationId: conversationId, role: "user", content: text, meta: nil, createdAt: Int64(Date().timeIntervalSince1970 * 1000))
         store.upsert(messages: [local], conversationId: conversationId)

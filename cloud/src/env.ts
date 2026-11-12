@@ -11,14 +11,6 @@ export interface Env {
   // Secrets
   ADMIN_TOKEN?: string;
   ENCRYPTION_KEY?: string; // base64, 32 bytes
-  OPENAI_API_KEY?: string;
-  /**
-   * Which credential the model client uses:
-   *  - "chatgpt" (default): only the linked ChatGPT account (Sign in with ChatGPT); fails visibly.
-   *  - "api_key": only OPENAI_API_KEY.
-   *  - "chatgpt_then_api_key": paid fallback — disabled unless explicitly configured.
-   */
-  OPENAI_AUTH_MODE?: string;
   /** Sign in with ChatGPT issuer. Defaults to https://auth.openai.com (overridable only for local tests). */
   SIWC_ISSUER?: string;
   /** Responses/models base URL for ChatGPT plan usage. Defaults to https://api.openai.com/v1. */

@@ -1,3 +1,4 @@
+import { mainConversation, MAIN_CONVERSATION_ID } from "./conversation";
 import type { Env } from "./env";
 import { QueryBudget } from "./budget";
 import { logActivity } from "./db";
@@ -272,12 +273,9 @@ export async function briefingPhase(env: Env, budget: QueryBudget, force = false
     input: [{ role: "user", content: untrusted("briefing-data", JSON.stringify(data), 24000) }],
   });
   const text = res.text.trim();
-  // Store the briefing in a "Briefings" conversation so it syncs and is searchable.
-  let conv = await env.DB.prepare("SELECT id FROM conversations WHERE title = 'Briefings' LIMIT 1").first<{ id: string }>();
-  if (!conv) {
-    conv = { id: newId("conv") };
-    await env.DB.prepare("INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, 'Briefings', ?, ?)").bind(conv.id, now(), now()).run();
-  }
+  // Briefings belong in the same ongoing conversation as direct messages.
+  await mainConversation(env);
+  const conv = { id: MAIN_CONVERSATION_ID };
   await env.DB.batch([
     env.DB.prepare("INSERT INTO messages (id, conversation_id, role, content, meta, created_at) VALUES (?, ?, 'assistant', ?, ?, ?)").bind(newId("msg"), conv.id, `**Briefing — ${date}**\n\n${text}`, JSON.stringify({ kind: "briefing" }), now()),
     env.DB.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").bind(now(), conv.id),

@@ -37,10 +37,23 @@ struct OrbitApp: App {
             RootView()
                 .environmentObject(model)
                 .environmentObject(model.store)
+                #if os(macOS)
+                .background { OrbitWindowAppearance() }
+                .onAppear {
+                    if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+                       let icon = NSImage(contentsOf: iconURL) {
+                        NSApplication.shared.applicationIconImage = icon
+                    }
+                }
+                .ignoresSafeArea(.container, edges: .top)
+                #endif
                 #if os(iOS)
                 .onAppear { OrbitApp.sharedModel = model }
                 #endif
         }
+        #if os(macOS)
+        .windowStyle(.hiddenTitleBar)
+        #endif
         .onChange(of: phase) { _, p in
             #if os(iOS)
             switch p {
@@ -51,32 +64,28 @@ struct OrbitApp: App {
             #endif
         }
         #if os(macOS)
-        // The Mac companion keeps running from the menu bar so device tasks execute while windows are closed.
-        MenuBarExtra("Orbit", systemImage: model.store.pendingApprovals.isEmpty ? "circle.circle" : "exclamationmark.circle") {
-            MenuContent().environmentObject(model).environmentObject(model.store)
-        }
-        Settings { SettingsView().environmentObject(model).environmentObject(model.store).frame(width: 520, height: 640) }
+        Settings { SettingsView().environmentObject(model).environmentObject(model.store).preferredColorScheme(.dark).frame(width: 520, height: 640) }
         #endif
     }
 }
 
 #if os(macOS)
-struct MenuContent: View {
-    @EnvironmentObject var model: AppModel
-    @EnvironmentObject var store: OrbitStore
-    var body: some View {
-        Text(model.isPaired ? "Orbit companion running" : "Not paired")
-        if let s = store.lastSyncAt { Text("Synced \(s.formatted(date: .omitted, time: .shortened))") }
-        Divider()
-        ForEach(store.pendingApprovals.prefix(5)) { a in
-            Menu(a.summary) {
-                Button("Approve") { Task { await model.decide(a.id, approve: true) } }
-                Button("Deny") { Task { await model.decide(a.id, approve: false) } }
-            }
+import AppKit
+
+private struct OrbitWindowAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { WindowView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+    private final class WindowView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.styleMask.insert(.fullSizeContentView)
+            window.backgroundColor = .black
+            window.toolbar = nil
+            window.isMovableByWindowBackground = true
         }
-        if !store.pendingApprovals.isEmpty { Divider() }
-        Button("Sync now") { Task { await model.tick() } }
-        Button("Quit Orbit") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
     }
 }
 #endif

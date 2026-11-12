@@ -1,3 +1,4 @@
+import { mainConversation, MAIN_CONVERSATION_ID } from "./conversation";
 import type { Env } from "./env";
 import { HttpError, json, readJson, Router, str } from "./http";
 import { authenticate, createPairingCode, redeemPairingCode, registerDevice, type Principal } from "./auth";
@@ -9,7 +10,7 @@ import { sync } from "./sync";
 import { heartbeat, PHASES, type Phase } from "./heartbeat";
 import { listAccounts, publicAccount, upsertAccount } from "./accounts";
 import { googleAuthUrl } from "./connectors/google";
-import { authMode, importCredentials, modelCatalog, signInConfig, signOut } from "./agent/llmauth";
+import { importCredentials, modelCatalog, signInConfig, signOut } from "./agent/llmauth";
 import { icloudMail } from "./connectors/icloud";
 import { github } from "./connectors/github";
 import { slackApi } from "./connectors/slack";
@@ -71,6 +72,7 @@ router.on("DELETE", "/v1/devices/:id", async (_r, p, c) => {
 });
 
 // ── Conversations ────────────────────────────────────────────────────────────
+router.on("POST", "/v1/conversation", async (_r, _p, c) => json(await mainConversation(c.env)));
 router.on("GET", "/v1/conversations", async (r, _p, c) => {
   const archived = new URL(r.url).searchParams.get("archived") === "1" ? 1 : 0;
   const rows = await c.env.DB.prepare("SELECT * FROM conversations WHERE archived = ? ORDER BY updated_at DESC LIMIT 200").bind(archived).all();
@@ -86,6 +88,7 @@ router.on("POST", "/v1/conversations", async (r, _p, c) => {
   return json(await c.env.DB.prepare("SELECT * FROM conversations WHERE id = ?").bind(id).first(), 201);
 });
 router.on("PATCH", "/v1/conversations/:id", async (r, p, c) => {
+  if (p.id === MAIN_CONVERSATION_ID) throw new HttpError(400, "The ongoing Orbit conversation cannot be archived or renamed", "validation");
   const b = await readJson<{ title?: string; archived?: boolean }>(r);
   await c.env.DB.prepare("UPDATE conversations SET title = COALESCE(?, title), archived = COALESCE(?, archived), updated_at = ? WHERE id = ?")
     .bind(b.title ? truncate(b.title, 120) : null, b.archived === undefined ? null : b.archived ? 1 : 0, now(), p.id)
@@ -93,6 +96,7 @@ router.on("PATCH", "/v1/conversations/:id", async (r, p, c) => {
   return json(await c.env.DB.prepare("SELECT * FROM conversations WHERE id = ?").bind(p.id).first());
 });
 router.on("DELETE", "/v1/conversations/:id", async (_r, p, c) => {
+  if (p.id === MAIN_CONVERSATION_ID) throw new HttpError(400, "The ongoing Orbit conversation cannot be deleted", "validation");
   // Direct user action from an authenticated device (not reachable by the model).
   await c.env.DB.batch([c.env.DB.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(p.id), c.env.DB.prepare("DELETE FROM conversations WHERE id = ?").bind(p.id)]);
   return json({ ok: true });
@@ -339,9 +343,8 @@ router.on("GET", "/v1/model", async (r, _p, c) => {
   const info: Record<string, unknown> = {
     basic_model: c.env.OPENAI_MODEL_BASIC,
     advanced_model: c.env.OPENAI_MODEL_ADVANCED,
-    auth_mode: authMode(c.env),
+    auth_mode: "chatgpt",
     chatgpt_accounts: linked,
-    api_key_configured: !!c.env.OPENAI_API_KEY,
   };
   // ?verify=1 checks the configured IDs against the signed-in account's own model catalog.
   if (new URL(r.url).searchParams.get("verify") === "1") {

@@ -33,9 +33,11 @@ public final class OrbitStore: ObservableObject {
 
     // MARK: Derived views
 
+    public static let mainConversationId = "conv_orbit_primary"
+
     public var sortedConversations: [Conversation] { conversations.values.filter { $0.archived == 0 }.sorted { $0.updatedAt > $1.updatedAt } }
     public func chat(_ conversationId: String) -> [Message] {
-        messages.values.filter { $0.conversationId == conversationId && ($0.isVisibleChat) }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+        messages.values.filter { (conversationId == Self.mainConversationId || $0.conversationId == conversationId) && $0.isVisibleChat }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
     public var pendingApprovals: [Approval] { approvals.values.filter { $0.status == "pending" }.sorted { $0.createdAt > $1.createdAt } }
     public var recentTasks: [OrbitTask] { tasks.values.sorted { $0.updatedAt > $1.updatedAt } }
