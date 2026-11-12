@@ -303,7 +303,7 @@ try {
     assert.equal((await api("/v1/profile/assistant_color", { method: "PUT", token: mac, body: { content: "neon" } })).status, 400);
     assert.ok(instr.includes("First name: Sam") && instr.includes("Studies computer science at CMU"), "profile is assistant context");
     const s = (await api("/v1/sync?since=0", { token: mac })).body;
-    assert.equal(s.changes.profile.length, 19, "10 fields, 6 retired rows, the avatar name and color, and quiet hours");
+    assert.equal(s.changes.profile.length, 19, "10 fields, 6 retired rows, the avatar name and color, and a retired quiet-hours row");
     assert.ok(s.changes.profile_suggestion.length >= 1 && !JSON.stringify(s.changes.profile_suggestion).includes('"norm"'));
   });
   let calTask;
@@ -454,13 +454,14 @@ try {
     assert.equal(runs[0].status, "ok", JSON.stringify(runs[0]));
     assert.ok(runs[0].summary.queries <= 44);
   });
-  await step("responsibilities phase notifies due items once", async () => {
+  await step("source polling preserves due goal checks for the minute scheduler", async () => {
     const rs = (await api("/v1/responsibilities")).body.responsibilities[0];
-    await api(`/v1/responsibilities/${rs.id}`, { method: "PATCH", body: { next_check_at: new Date(Date.now() - 1000).toISOString() } });
+    const due=Date.now()-1000;
+    await api(`/v1/responsibilities/${rs.id}`, { method: "PATCH", body: { next_check_at: new Date(due).toISOString() } });
     const h = (await api("/v1/heartbeat/run", { method: "POST", body: { phase: "responsibilities" } })).body;
-    assert.equal(h.responsibilities.reminded, 1);
-    const h2 = (await api("/v1/heartbeat/run", { method: "POST", body: { phase: "responsibilities" } })).body;
-    assert.equal(h2.responsibilities.reminded, 0);
+    assert.ok(h.responsibilities.canvas);
+    assert.equal((await api("/v1/responsibilities")).body.responsibilities.find((r)=>r.id===rs.id).next_check_at,due);
+    await api(`/v1/responsibilities/${rs.id}`,{method:"PATCH",body:{next_check_at:new Date(Date.now()+864e5).toISOString()}});
   });
   await step("Google OAuth link creates a state-bound consent URL", async () => {
     const r = (await api("/v1/accounts/google/link", { method: "POST", body: { label: "Personal" } })).body;
@@ -471,7 +472,7 @@ try {
     const bad = await fetch(`${BASE}/oauth/google/callback?state=forged&code=x`);
     assert.equal(bad.status, 400);
   });
-  await step("scheduled tasks: create in chat, approval to change, quiet hours, runs deliver in chat", async () => {
+  await step("scheduled tasks: create in chat, approval to change, no quiet hours, runs deliver in chat", async () => {
     const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: "Every weekday at 7:45 check my inbox", client_msg_id: "sched-1" } });
     assert.match(r.body.messages[1].content, /^Scheduled\./);
     let list = (await api("/v1/schedules", { token: mac })).body.schedules;
@@ -486,13 +487,14 @@ try {
     // The user can pause and resume directly.
     assert.equal((await api(`/v1/schedules/${inbox.id}`, { method: "PATCH", token: mac, body: { status: "paused" } })).body.next_run_at, null);
     assert.ok((await api(`/v1/schedules/${inbox.id}`, { method: "PATCH", token: mac, body: { status: "active" } })).body.next_run_at > Date.now());
-    // Quiet hours defer a run to when they end, in the schedule's time zone.
-    assert.equal((await api("/v1/profile/quiet_hours", { method: "PUT", token: mac, body: { content: "bad" } })).status, 400);
-    await api("/v1/profile/quiet_hours", { method: "PUT", token: mac, body: { content: "00:00-23:59" } });
-    const deferred = (await api(`/v1/schedules`)).body.schedules.find((x) => x.id === inbox.id);
-    const local = new Intl.DateTimeFormat("en-US", { timeZone: inbox.timezone, hour: "numeric", minute: "numeric", hourCycle: "h23" }).format(deferred.next_run_at);
-    assert.equal(local, "23:59");
-    await api("/v1/profile/quiet_hours", { method: "PUT", token: mac, body: { content: "" } });
+    // Quiet hours are no longer a supported setting, and tasks keep their requested time.
+    assert.equal((await api("/v1/profile/quiet_hours", { method: "PUT", token: mac, body: { content: "22:00-07:00" } })).status, 404);
+    // A legacy cached setting must not affect timing or prevent the minute cron from firing.
+    execFileSync("npx", ["wrangler", "d1", "execute", "orbit", "--local", "--persist-to", state, "--command",
+      "UPDATE profile_sections SET content = '00:00-23:59' WHERE id = 'quiet_hours'"], { cwd, stdio: "ignore" });
+    const early = await api(`/v1/schedules/${inbox.id}`, { method: "PATCH", token: mac, body: { time_of_day: "06:00" } });
+    const local = new Intl.DateTimeFormat("en-US", { timeZone: inbox.timezone, hour: "numeric", minute: "numeric", hourCycle: "h23" }).format(early.body.next_run_at);
+    assert.equal(local, "06:00");
     // A one-time run fires from the minute cron and its result lands in the chat.
     const once = await api("/v1/schedules", { method: "POST", token: mac, body: { title: "Water plants", instructions: "Say water the plants.", repeat: "once", run_at: Date.now() + 1500 } });
     assert.equal(once.status, 201, JSON.stringify(once.body));
@@ -515,6 +517,142 @@ try {
     assert.equal((await api("/v1/schedules")).body.schedules.find((x) => x.id === once.body.id).run_count, 1);
     assert.equal((await api(`/v1/schedules/${once.body.id}`, { method: "DELETE", token: mac })).status, 200);
     assert.ok(!(await api("/v1/schedules")).body.schedules.some((x) => x.id === once.body.id));
+  });
+  await step("built-in briefing is editable in Scheduled and is not recreated after deletion", async () => {
+    await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`);
+    await new Promise((r)=>setTimeout(r,300));
+    const list=(await api("/v1/schedules")).body.schedules;
+    const morning=list.find((s)=>s.id==="sch_orbit_morning");
+    assert.equal(morning.time_of_day,"07:00");
+    assert.equal(morning.source,"orbit");
+    assert.ok(morning.origin_reason);
+    await api(`/v1/schedules/${morning.id}`,{method:"PATCH",body:{status:"paused"}});
+    await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`);
+    assert.equal((await api("/v1/schedules")).body.schedules.find((s)=>s.id===morning.id).status,"paused");
+    await api(`/v1/schedules/${morning.id}`,{method:"DELETE"});
+    await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`);
+    assert.ok(!(await api("/v1/schedules")).body.schedules.some((s)=>s.id===morning.id));
+  });
+  await step("ordinary reminders stay in Orbit; explicit Apple reminders show only completion",async()=>{
+    const first=await postMessage(conv,"Remind me about sample task tomorrow","orbit-reminder");
+    assert.ok(first.body.messages.some((m)=>m.content.includes("Reminder set in Orbit")));
+    assert.ok((await api("/v1/schedules")).body.schedules.some((s)=>s.title==="Sample task"));
+    const second=await postMessage(conv,"Remind me about sample task tomorrow in Apple Reminders","apple-reminder");
+    assert.ok(second.body.messages.some((m)=>m.role==="tool_result" && m.content.startsWith("Queued for")));
+    assert.ok(!second.body.messages.some((m)=>m.role==="assistant"),"no redundant queued reply");
+  });
+  await step("private encrypted attachments round-trip, sync and reach the model",async()=>{
+    const fresh=(await api("/v1/conversations",{method:"POST",body:{title:"Attachment fixture"}})).body.id;
+    const upload=async(name,data,token=phone)=>{
+      const response=await fetch(`${BASE}/v1/conversations/${fresh}/attachments?filename=${encodeURIComponent(name)}`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/octet-stream"},body:data});
+      return {status:response.status,body:await response.json()};
+    };
+    const csv=Buffer.from("name,value\nfixture_csv_secret,42\n");
+    const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP1cAAAAASUVORK5CYII=","base64");
+    const pdf=Buffer.from("%PDF-1.4\nAttachment fixture PDF\n%%EOF");
+    const files=[];
+    for(const [name,bytes] of [["fixture.csv",csv],["fixture.png",png],["fixture.pdf",pdf]]){
+      const uploaded=await upload(name,bytes);
+      assert.equal(uploaded.status,201,JSON.stringify(uploaded.body));
+      files.push(uploaded.body);
+      const response=await fetch(`${BASE}/v1/attachments/${uploaded.body.id}`,{headers:{authorization:`Bearer ${mac}`}});
+      assert.equal(response.status,200);
+      assert.equal(response.headers.get("cache-control"),"private, no-store");
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()),bytes);
+    }
+    assert.equal((await fetch(`${BASE}/v1/attachments/${files[0].id}`)).status,401);
+    assert.equal((await upload("danger.exe",csv)).status,400);
+    assert.equal((await upload("fake.png",csv)).status,400);
+    assert.equal((await upload("empty.txt",Buffer.alloc(0))).status,413);
+    assert.equal((await upload("huge.txt",Buffer.alloc(5*1024*1024+1))).status,413);
+    const wrong=await api(`/v1/conversations/${conv}/messages`,{method:"POST",body:{content:"Wrong conversation",attachment_ids:[files[0].id]}});
+    assert.equal(wrong.status,404);
+    const result=await api(`/v1/conversations/${fresh}/messages`,{method:"POST",token:phone,body:{content:"Inspect attachment fixture",client_msg_id:"attachment-message",attachment_ids:files.map(f=>f.id)}});
+    assert.equal(result.status,201,JSON.stringify(result.body));
+    assert.match(result.body.messages.find(m=>m.role==="assistant").content,/photo, PDF and CSV/);
+    const replay=await api(`/v1/conversations/${fresh}/messages`,{method:"POST",token:mac,body:{content:"Inspect attachment fixture",client_msg_id:"attachment-message",attachment_ids:files.map(f=>f.id)}});
+    assert.equal(replay.body.replayed,true);
+    const messages=(await api(`/v1/conversations/${fresh}/messages`)).body.messages;
+    assert.equal(messages.filter(m=>m.role==="user").length,1);
+    assert.equal(messages.find(m=>m.role==="user").meta.attachments.length,3);
+    const synced=JSON.stringify((await api("/v1/sync",{token:mac})).body);
+    assert.ok(synced.includes(files[0].id));
+    assert.ok(!synced.includes(png.toString("base64")),"sync contains references, not binary data");
+    const fileOnly=await api(`/v1/conversations/${fresh}/messages`,{method:"POST",body:{content:"",client_msg_id:"attachment-no-caption",attachment_ids:[files[0].id]}});
+    assert.equal(fileOnly.status,201,"a file can be sent without typing a caption");
+    const reopened=await api(`/v1/conversations/${fresh}/messages`,{method:"POST",body:{content:`Reopen attachment ${files[0].id}`,client_msg_id:"attachment-followup"}});
+    assert.match(reopened.body.messages.find(m=>m.role==="assistant").content,/reopened the earlier CSV/);
+    // Force more than one encrypted storage chunk and verify the original bytes survive.
+    const large=Buffer.from("private_fixture_line\n".repeat(35000));
+    const extra=await upload("large.txt",large);
+    assert.equal(extra.status,201,JSON.stringify(extra.body));
+    const downloaded=await fetch(`${BASE}/v1/attachments/${extra.body.id}`,{headers:{authorization:`Bearer ${mac}`}});
+    assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()),large);
+    const check=execFileSync("npx",["wrangler","d1","execute","orbit","--local","--persist-to",state,"--json","--command","SELECT COUNT(*) AS matches FROM attachment_chunks WHERE instr(data,CAST('private_fixture_line' AS BLOB))>0"],{cwd,encoding:"utf8"});
+    assert.equal(JSON.parse(check)[0].results[0].matches,0,"stored bytes are encrypted");
+    await api(`/v1/attachments/${extra.body.id}`,{method:"DELETE"});
+    assert.equal((await api(`/v1/attachments/${extra.body.id}`)).status,404);
+    const cursor=(await api("/v1/sync")).body.cursor;
+    await api(`/v1/conversations/${fresh}`,{method:"DELETE"});
+    assert.equal((await api(`/v1/attachments/${files[0].id}`)).status,404,"deleting the conversation removes its attachments");
+    const removed=(await api(`/v1/sync?since=${cursor}`)).body;
+    assert.ok(removed.deleted.message.includes(messages.find(m=>m.role==="user").id),"other devices remove deleted file messages from their cache");
+  });
+  await step("long tool work ends with an answer from the completed results",async()=>{
+    const fresh=(await api("/v1/conversations",{method:"POST",body:{}})).body.id;
+    const result=await postMessage(fresh,"Long tool retrieval fixture","last-step-answer");
+    const answer=result.body.messages.find((m)=>m.role==="assistant");
+    assert.equal(answer.content,"Final answer from the completed results.");
+    const completed=result.body.messages.filter((m)=>m.role==="tool_result").length;
+    assert.ok(completed>=4 && completed<=6,`completed ${completed} tool steps before summarizing`);
+  });
+  await step("a reaction acknowledges the user without a reply and syncs across devices",async()=>{
+    const before=(await api("/v1/sync",{token:phone})).body.cursor;
+    const result=await postMessage(conv,"Thanks, that is all!","reaction-thanks");
+    assert.ok(!result.body.messages.some((m)=>m.role==="assistant"));
+    const messages=(await api(`/v1/conversations/${conv}/messages`,{token:mac})).body.messages;
+    const reacted=messages.find((m)=>m.client_msg_id==="reaction-thanks");
+    assert.equal(reacted.meta.reaction.emoji,"❤️");
+    const sync=(await api(`/v1/sync?since=${before}`,{token:phone})).body;
+    assert.equal(sync.changes.message.find((m)=>m.id===reacted.id).meta.reaction.emoji,"❤️");
+    const replay=await postMessage(conv,"Thanks, that is all!","reaction-thanks");
+    assert.equal(replay.body.replayed,true);
+  });
+  await step("AI-created tracking deduplicates, can be paused, and ignores stopped items",async()=>{
+    await postMessage(conv,"A proactive commitment: I need to finish my research proposal.","goal-first");
+    await postMessage(conv,"A proactive commitment: I need to finish my research proposal.","goal-again");
+    let goals=(await api("/v1/responsibilities")).body.responsibilities.filter((r)=>r.title==="Finish research proposal");
+    assert.equal(goals.length,1);
+    assert.match(JSON.parse(goals[0].data).why,/committed/);
+    const id=goals[0].id;
+    await api(`/v1/responsibilities/${id}`,{method:"PATCH",body:{paused:true}});
+    goals=(await api("/v1/responsibilities")).body.responsibilities;
+    assert.equal(goals.find((r)=>r.id===id).next_check_at,null);
+    await postMessage(conv,"A proactive commitment: I need to finish my research proposal.","goal-paused");
+    assert.equal((await api("/v1/responsibilities")).body.responsibilities.find((r)=>r.id===id).next_check_at,null);
+    await api(`/v1/responsibilities/${id}`,{method:"PATCH",body:{status:"cancelled"}});
+    await postMessage(conv,"A proactive commitment: I need to finish my research proposal.","goal-stopped");
+    assert.ok(!(await api("/v1/responsibilities")).body.responsibilities.some((r)=>r.id===id));
+  });
+  await step("due goal checks run quietly and unchanged evidence skips a second AI call",async()=>{
+    const item=(await api("/v1/responsibilities",{method:"POST",body:{title:"Background check fixture",kind:"research",due_at:"2050-01-01T00:00:00Z"}})).body;
+    await api(`/v1/responsibilities/${item.id}`,{method:"PATCH",body:{next_check_at:new Date(Date.now()-1000).toISOString()}});
+    await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`);
+    let checked;
+    for(let i=0;i<60&&!checked;i++){
+      await new Promise((r)=>setTimeout(r,100));
+      const row=(await api("/v1/responsibilities")).body.responsibilities.find((r)=>r.id===item.id);
+      if(JSON.parse(row.data).last_checked_at)checked=row;
+    }
+    assert.ok(checked,"background AI checked the item");
+    const msgs=(await api(`/v1/conversations/conv_orbit_primary/messages`)).body.messages;
+    assert.ok(!msgs.some((m)=>m.role==="assistant"&&m.content.includes("ORBIT_NO_UPDATE")));
+    const before=requests.length;
+    await api(`/v1/responsibilities/${item.id}`,{method:"PATCH",body:{next_check_at:new Date(Date.now()-1000).toISOString()}});
+    await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`);
+    await new Promise((r)=>setTimeout(r,400));
+    assert.equal(requests.length,before,"unchanged nonurgent sources do not invoke AI again");
+    await api(`/v1/responsibilities/${item.id}`,{method:"PATCH",body:{status:"done"}});
   });
   await step("Markdown export includes memory, responsibilities and conversations", async () => {
     const md = (await api("/v1/export.md")).body;

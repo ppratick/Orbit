@@ -9,7 +9,7 @@ import { encryptSecret, decryptSecret } from "../../src/crypto";
 import { extractGmailText } from "../../src/connectors/google";
 import { historyToInput } from "../../src/agent/agent";
 import { CallUsage } from "../../src/agent/llm";
-import { computeNextRun, describeRule, inQuiet, nextOccurrence, parseQuiet, partsIn, quietEnd, zonedToUtc } from "../../src/schedules";
+import { describeRule, nextOccurrence, partsIn, zonedToUtc } from "../../src/schedules";
 import { assertPublicUrl } from "../../src/connectors/browser";
 import { phaseFor } from "../../src/heartbeat";
 import { alreadyCovered, appendLine, profileForPrompt } from "../../src/profile";
@@ -214,7 +214,7 @@ describe("Scheduled tasks timing", () => {
     const skipped = partsIn(NY, zonedToUtc(NY, 2026, 3, 8, 2, 30));
     expect(skipped.h).toBe(3);
   });
-  const base = { time_of_day: "08:00", days: null, interval_hours: null, run_at: null, timezone: NY, respect_quiet_hours: 1 };
+  const base = { time_of_day: "08:00", days: null, interval_hours: null, run_at: null, timezone: NY };
   it("finds the next weekday, daily and weekly occurrence in the schedule's zone", () => {
     const fri9am = zonedToUtc(NY, 2026, 11, 13, 9, 0); // Friday after 8 AM
     expect(partsIn(NY, nextOccurrence({ ...base, repeat: "weekdays" }, fri9am)!)).toMatchObject({ d: 16, h: 8, wd: 1 }); // Monday
@@ -229,16 +229,9 @@ describe("Scheduled tasks timing", () => {
     expect(nextOccurrence({ ...base, repeat: "once", run_at: t + 60_000 }, t)).toBe(t + 60_000);
     expect(nextOccurrence({ ...base, repeat: "once", run_at: t + 60_000 }, t + 60_000)).toBeNull();
   });
-  it("defers runs in quiet hours (including windows past midnight) to when they end", () => {
-    const q = parseQuiet("22:00-07:00")!;
-    expect(inQuiet(q, NY, zonedToUtc(NY, 2026, 11, 12, 23, 30))).toBe(true);
-    expect(inQuiet(q, NY, zonedToUtc(NY, 2026, 11, 12, 6, 59))).toBe(true);
-    expect(inQuiet(q, NY, zonedToUtc(NY, 2026, 11, 12, 7, 0))).toBe(false);
-    expect(partsIn(NY, quietEnd(q, NY, zonedToUtc(NY, 2026, 11, 12, 23, 30)))).toMatchObject({ d: 13, h: 7, mi: 0 });
+  it("keeps early-morning runs at the requested time", () => {
     const at6 = { ...base, repeat: "daily" as const, time_of_day: "06:00" };
-    const next = computeNextRun(at6, "22:00-07:00", zonedToUtc(NY, 2026, 11, 12, 9, 0));
-    expect(partsIn(NY, next!)).toMatchObject({ d: 13, h: 7 });
-    expect(partsIn(NY, computeNextRun({ ...at6, respect_quiet_hours: 0 }, "22:00-07:00", zonedToUtc(NY, 2026, 11, 12, 9, 0))!)).toMatchObject({ h: 6 });
+    expect(partsIn(NY, nextOccurrence(at6, zonedToUtc(NY, 2026, 11, 12, 9, 0))!)).toMatchObject({ d: 13, h: 6 });
   });
   it("describes rules in plain words", () => {
     expect(describeRule({ ...base, repeat: "weekdays" })).toMatch(/^Every weekday at 8:00 AM \(Eastern (Standard|Daylight) Time\)$/);

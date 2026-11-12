@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { HttpError } from "./http";
 import { newId, now, parseJson } from "./util";
+import { nextGoalCheck, normalizedGoal } from "./proactive";
 import { getProfile, PROFILE_SECTIONS } from "./profile";
 
 export interface MemoryRow {
@@ -99,9 +100,17 @@ export async function upsertResponsibility(
   },
 ): Promise<{ id: string; created: boolean }> {
   const kind = KINDS.includes(r.kind ?? "") ? r.kind! : "custom";
-  if (r.dedupe_key) {
-    const ex = await env.DB.prepare("SELECT id FROM responsibilities WHERE dedupe_key = ?").bind(r.dedupe_key).first<{ id: string }>();
-    if (ex) return { id: ex.id, created: false };
+  const ex = r.dedupe_key ? await env.DB.prepare("SELECT * FROM responsibilities WHERE dedupe_key = ?").bind(r.dedupe_key).first<ResponsibilityRow>() : null;
+  const same = ex ?? (await listResponsibilities(env)).find((item) => item.kind === kind && normalizedGoal(item.title) === normalizedGoal(r.title));
+  if (same) {
+    const data = parseJson<Record<string, unknown>>(same.data, {});
+    if (!["done", "cancelled"].includes(same.status) && !data.paused) {
+      await updateResponsibility(env, same.id, {
+        notes: r.notes ?? same.notes, due_at: r.due_at !== undefined ? r.due_at : same.due_at,
+        next_check_at: r.next_check_at ?? same.next_check_at ?? nextGoalCheck(r.due_at ?? same.due_at), data: r.data,
+      });
+    }
+    return { id: same.id, created: false };
   }
   const id = newId("resp");
   const t = now();
@@ -115,7 +124,7 @@ export async function upsertResponsibility(
       kind,
       (r.notes ?? "").slice(0, 4000),
       r.due_at ?? null,
-      r.next_check_at ?? (r.due_at ? Math.max(t, r.due_at - 24 * 3600_000) : null),
+      r.next_check_at ?? nextGoalCheck(r.due_at ?? null, t),
       r.check_interval_min ?? null,
       JSON.stringify(r.data ?? {}),
       r.source,
@@ -136,7 +145,7 @@ export async function updateResponsibility(
   const cur = await env.DB.prepare("SELECT * FROM responsibilities WHERE id = ?").bind(id).first<ResponsibilityRow>();
   if (!cur) throw new HttpError(404, "Responsibility not found", "not_found");
   if (patch.status && !["active", "waiting", "done", "cancelled"].includes(patch.status)) throw new HttpError(400, "invalid status", "validation");
-  const data = patch.data ? { ...parseJson(cur.data, {}), ...patch.data } : parseJson(cur.data, {});
+  const data = patch.data ? { ...parseJson<Record<string, unknown>>(cur.data, {}), ...patch.data } : parseJson<Record<string, unknown>>(cur.data, {});
   await env.DB.batch([
     env.DB.prepare(
       `UPDATE responsibilities SET title = ?, status = ?, notes = ?, due_at = ?, next_check_at = ?, data = ?, updated_at = ? WHERE id = ?`,
@@ -145,7 +154,7 @@ export async function updateResponsibility(
       patch.status ?? cur.status,
       patch.notes ?? cur.notes,
       patch.due_at !== undefined ? patch.due_at : cur.due_at,
-      patch.next_check_at !== undefined ? patch.next_check_at : cur.next_check_at,
+      data.paused || ["done","cancelled"].includes(patch.status ?? cur.status) ? null : patch.next_check_at !== undefined ? patch.next_check_at : cur.next_check_at,
       JSON.stringify(data),
       now(),
       id,

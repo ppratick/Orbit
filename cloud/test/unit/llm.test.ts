@@ -36,6 +36,18 @@ describe("SSE parsing", () => {
     expect(r.calls).toEqual([{ call_id: "c1", name: "remember", namespace: "orbit", arguments: "{}" }]);
     expect(r.reasoning).toHaveLength(1);
   });
+  it("separates distinct text messages in the live stream and saved answer", async () => {
+    const deltas:string[]=[];
+    const r=await readStream(sse([
+      {type:"response.output_text.delta",item_id:"a",delta:"Checking."},
+      {type:"response.output_text.delta",item_id:"b",delta:"The answer."},
+      {type:"response.output_item.done",item:{type:"message",content:[{type:"output_text",text:"Checking."}]}},
+      {type:"response.output_item.done",item:{type:"message",content:[{type:"output_text",text:"The answer."}]}},
+      {type:"response.completed",response:{}},
+    ]),(d)=>void deltas.push(d));
+    expect(r.text).toBe("Checking.\n\nThe answer.");
+    expect(deltas.join("")).toBe(r.text);
+  });
   it("handles events split across chunks", async () => {
     const body = new ReadableStream<Uint8Array>({
       start(c) {

@@ -4,7 +4,8 @@ import { HttpError, json } from "./http";
 import { handleAuthed, redeem } from "./routes";
 import { googleCallback } from "./connectors/google";
 import { resumeConversations } from "./agent/agent";
-import { heartbeat, phaseFor } from "./heartbeat";
+import { dispatchHeartbeat } from "./heartbeat";
+import { queueGoalChecks } from "./proactive";
 import { runDueSchedules } from "./schedules";
 
 const VERSION = "0.1.0";
@@ -50,8 +51,9 @@ export default {
       exec.waitUntil(
         runDueSchedules(env)
           .then(async (r) => {
-            if (r.queued || r.deferred) console.log("schedules", JSON.stringify(r));
-            if (r.queued) await resumeConversations(env);
+            if (r.queued) console.log("schedules", JSON.stringify(r));
+            const goals = await queueGoalChecks(env);
+            if (r.queued || goals) await resumeConversations(env);
           })
           .catch((e) => console.error("schedules", String(e))),
       );
@@ -59,7 +61,7 @@ export default {
     }
     exec.waitUntil(resumeConversations(env).catch((e) => console.error("chat recovery", String(e))));
     exec.waitUntil(
-      heartbeat(env, phaseFor(event.scheduledTime)).then((s) => console.log("heartbeat", JSON.stringify(s))),
+      Promise.all([dispatchHeartbeat(env, "email"), dispatchHeartbeat(env, "responsibilities"), dispatchHeartbeat(env, "changes")]),
     );
   },
 } satisfies ExportedHandler<Env>;

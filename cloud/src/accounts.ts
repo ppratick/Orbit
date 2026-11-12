@@ -81,5 +81,5 @@ export async function markAccountError(env: Env, id: string, error: string | nul
 }
 
 export async function setSyncState(env: Env, id: string, state: Record<string, unknown>) {
-  await env.DB.prepare("UPDATE accounts SET sync_state = ?, last_sync_at = ? WHERE id = ?").bind(JSON.stringify(state), now(), id).run();
+  await env.DB.prepare("UPDATE accounts SET sync_state = json_patch(COALESCE(sync_state, '{}'), ?), last_sync_at = ? WHERE id = ?").bind(JSON.stringify(state), now(), id).run();
 }

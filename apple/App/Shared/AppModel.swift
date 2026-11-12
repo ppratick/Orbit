@@ -14,7 +14,9 @@ final class AppModel: NSObject, ObservableObject {
     @Published var serverURL: String = UserDefaults.standard.string(forKey: "serverURL") ?? ""
     @Published private(set) var isPaired = false
     @Published var sending: Set<String> = []          // conversation ids with a turn in flight
-    @Published var failedSend: [String: (text: String, clientId: String)] = [:]
+    @Published var failedSend: [String: (text: String, clientId: String, attachments: [AttachmentDraft])] = [:]
+    @Published var pendingAttachments: [AttachmentDraft] = []
+    @Published var preparingAttachments = false
     @Published var chatDraft = ""
     @Published var mainConversationId: String?
     @Published var openingConversation = false
@@ -223,21 +225,26 @@ final class AppModel: NSObject, ObservableObject {
 
     /// Sends a message. The client message id makes retries safe: the server replays the stored reply
     /// instead of re-running the turn (no duplicate drafts/tasks after a dropped connection).
-    func send(_ text: String, in conversationId: String, clientId: String = UUID().uuidString) async {
-        guard let api, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    func send(_ text: String, in conversationId: String, clientId: String = UUID().uuidString, attachments: [AttachmentDraft] = []) async {
+        guard let api, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return }
+        var files = attachments
         failedSend[conversationId] = nil
-        let local = Message(id: "local-\(clientId)", conversationId: conversationId, role: "user", content: text, meta: nil, createdAt: Int64(Date().timeIntervalSince1970 * 1000), clientMsgId: clientId)
+        let local = Message(id: "local-\(clientId)", conversationId: conversationId, role: "user", content: text, meta: files.isEmpty ? nil : .object(["attachments": .array(files.map { $0.metadata.json })]), createdAt: Int64(Date().timeIntervalSince1970 * 1000), clientMsgId: clientId)
         store.upsert(messages: [local], conversationId: conversationId)
         // Follow-ups are stored immediately. The server's single conversation owner
         // decides whether to steer the active run or queue independent work.
         if sending.contains(conversationId) {
             do {
-                let response = try await api.sendMessage(conversationId: conversationId, content: text, clientMessageId: clientId)
+                for index in files.indices where files[index].uploaded == nil {
+                    files[index].uploaded = try await api.uploadAttachment(conversationId: conversationId, name: files[index].name, data: files[index].data)
+                    AttachmentMemory.shared.put(files[index].data, id: files[index].uploaded!.id)
+                }
+                let response = try await api.sendMessage(conversationId: conversationId, content: text, clientMessageId: clientId, attachmentIds: files.compactMap { $0.uploaded?.id })
                 store.upsert(messages: response.messages, conversationId: conversationId)
                 await store.sync(using: api)
                 store.removeMessage(local.id)
             } catch {
-                failedSend[conversationId] = (text, clientId)
+                failedSend[conversationId] = (text, clientId, files)
                 banner = "Couldn’t confirm your follow-up: \(error.localizedDescription)"
             }
             return
@@ -250,15 +257,20 @@ final class AppModel: NSObject, ObservableObject {
             turnStatus[conversationId] = nil
         }
         do {
+            for index in files.indices where files[index].uploaded == nil {
+                turnStatus[conversationId] = "Uploading \(files[index].name)"
+                files[index].uploaded = try await api.uploadAttachment(conversationId: conversationId, name: files[index].name, data: files[index].data)
+                AttachmentMemory.shared.put(files[index].data, id: files[index].uploaded!.id)
+            }
             var final: TurnResponse?
-            for try await event in api.streamMessage(conversationId: conversationId, content: text, clientMessageId: clientId) {
+            for try await event in api.streamMessage(conversationId: conversationId, content: text, clientMessageId: clientId, attachmentIds: files.compactMap { $0.uploaded?.id }) {
                 switch event {
                 case .delta(let d): streaming[conversationId, default: ""] += d
-                case .status(let model, _): turnStatus[conversationId] = Self.modelLabel(model)
+                case .status: turnStatus[conversationId] = "Thinking"
                 case .tool(let name, let state):
                     if state == "running" {
                         streaming[conversationId] = "" // text before a tool call was a preamble; the final answer follows
-                        turnStatus[conversationId] = "Using \(name.replacingOccurrences(of: "_", with: " "))…"
+                        turnStatus[conversationId] = Self.toolProgress(name)
                     }
                 case .reset: streaming[conversationId] = ""
                 case .settled(let r):
@@ -274,8 +286,21 @@ final class AppModel: NSObject, ObservableObject {
             Task { await self.tick() }
         } catch {
             // Retrying with the same client id is safe: the server replays a finished turn instead of re-running it.
-            failedSend[conversationId] = (text, clientId)
+            failedSend[conversationId] = (text, clientId, files)
             banner = "Not sent: \(error.localizedDescription)"
+        }
+    }
+
+    static func toolProgress(_ name: String) -> String {
+        switch name {
+        case "search_email": return "Looking through your email"
+        case "read_email": return "Reading the conversation"
+        case "apple_calendar_and_reminders": return "Checking your calendar"
+        case "drive_search", "drive_read": return "Looking through your files"
+        case "canvas_upcoming", "canvas_courses": return "Checking coursework"
+        case "track_responsibility", "update_responsibility": return "Keeping track of this"
+        case "create_scheduled_task": return "Setting that up"
+        default: return "Working on it"
         }
     }
 
@@ -287,7 +312,7 @@ final class AppModel: NSObject, ObservableObject {
 
     func retry(in conversationId: String) async {
         guard let f = failedSend[conversationId] else { return }
-        await send(f.text, in: conversationId, clientId: f.clientId)
+        await send(f.text, in: conversationId, clientId: f.clientId, attachments: f.attachments)
     }
 
     // MARK: Approvals & actions

@@ -9,8 +9,10 @@ import { resolveAuth, type LlmAuth } from "./llmauth";
  * `response.completed`. We follow those rules for every request for ChatGPT plan usage.
  * https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
  */
+export type InputContent = {type:"input_text";text:string} | {type:"input_image";image_url:string;detail?:"auto"|"low"|"high"} | {type:"input_file";filename:string;file_data:string};
+
 export type InputItem =
-  | { role: "user" | "assistant" | "developer"; content: string }
+  | { role: "user" | "assistant" | "developer"; content: string | InputContent[] }
   | { type: "function_call"; call_id: string; name: string; arguments: string; namespace?: string }
   | { type: "function_call_output"; call_id: string; output: string }
   | { type: "reasoning"; [k: string]: unknown };
@@ -134,13 +136,20 @@ export async function readStream(body: ReadableStream<Uint8Array>, onDelta?: Req
   const out: Omit<LlmResult, "via" | "model"> = { text: "", calls: [], reasoning: [] };
   const items: Record<string, unknown>[] = [];
   let buf = "";
+  let lastTextItem: string | number | undefined;
   let terminal: "completed" | null = null;
   const handle = async (data: string) => {
     if (!data || data === "[DONE]") return;
-    const ev = JSON.parse(data) as { type: string; delta?: string; item?: Record<string, unknown>; response?: { output?: Record<string, unknown>[]; usage?: LlmResult["usage"]; error?: { code?: string; message?: string }; incomplete_details?: { reason?: string } }; error?: { code?: string; message?: string }; code?: string; message?: string };
+    const ev = JSON.parse(data) as { type: string; delta?: string; item_id?: string; output_index?: number; item?: Record<string, unknown>; response?: { output?: Record<string, unknown>[]; usage?: LlmResult["usage"]; error?: { code?: string; message?: string }; incomplete_details?: { reason?: string } }; error?: { code?: string; message?: string }; code?: string; message?: string };
     switch (ev.type) {
       case "response.output_text.delta":
         if (ev.delta) {
+          const key = ev.item_id ?? ev.output_index;
+          if (key !== undefined && lastTextItem !== undefined && key !== lastTextItem) {
+            out.text += "\n\n";
+            await onDelta?.("\n\n");
+          }
+          lastTextItem = key;
           out.text += ev.delta;
           await onDelta?.(ev.delta);
         }
@@ -182,17 +191,17 @@ export async function readStream(body: ReadableStream<Uint8Array>, onDelta?: Req
   if (buf.trim()) await handle(buf.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n"));
   if (terminal !== "completed") throw new LlmError(0, "stream_interrupted", "The model stream ended before completion");
   // Authoritative output items: text from message items (covers deltas we may have missed), calls, reasoning.
-  let text = "";
+  const texts: string[] = [];
   for (const item of items) {
     if (item.type === "message") {
-      for (const c of (item.content as { type: string; text?: string }[]) ?? []) if (c.type === "output_text" && c.text) text += c.text;
+      texts.push(((item.content as {type:string;text?:string}[]) ?? []).filter((c)=>c.type === "output_text" && c.text).map((c)=>c.text).join(""));
     } else if (item.type === "function_call") {
       out.calls.push({ call_id: String(item.call_id), name: String(item.name), arguments: String(item.arguments ?? "{}"), namespace: item.namespace ? String(item.namespace) : undefined });
     } else if (item.type === "reasoning") {
       out.reasoning.push(item);
     }
   }
-  if (text) out.text = text;
+  if (texts.some(Boolean)) out.text = texts.filter(Boolean).join("\n\n");
   return out;
 }
 

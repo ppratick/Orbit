@@ -14,7 +14,7 @@ public final class APIClient: @unchecked Sendable {
     private let token: String
     private let session: URLSession
 
-    public init(baseURL: URL, token: String, session: URLSession = .shared) {
+    public init(baseURL: URL, token: String, session: URLSession = Transport.session) {
         self.baseURL = baseURL
         self.token = token
         self.session = session
@@ -96,11 +96,33 @@ public final class APIClient: @unchecked Sendable {
         try await send("POST", "v1/conversations", body: ["id": id ?? ""])
     }
 
-    public func sendMessage(conversationId: String, content: String, clientMessageId: String) async throws -> TurnResponse {
-        struct B: Encodable { var content: String; var clientMsgId: String }
+    public func sendMessage(conversationId: String, content: String, clientMessageId: String, attachmentIds: [String] = []) async throws -> TurnResponse {
+        struct B: Encodable { var content: String; var clientMsgId: String; var attachmentIds: [String] }
         // Model turns with several tool calls can take a while.
-        return try await send("POST", "v1/conversations/\(conversationId)/messages", body: B(content: content, clientMsgId: clientMessageId), timeout: 180)
+        return try await send("POST", "v1/conversations/\(conversationId)/messages", body: B(content: content, clientMsgId: clientMessageId, attachmentIds: attachmentIds), timeout: 180)
     }
+
+    public func uploadAttachment(conversationId: String, name: String, data: Data) async throws -> ChatAttachment {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("v1/conversations/\(conversationId)/attachments"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "filename", value: name)]
+        var req = URLRequest(url: comps.url!, timeoutInterval: 120)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("Orbit/0.1", forHTTPHeaderField: "User-Agent")
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.httpBody = data
+        let (body, response) = try await Transport.data(for: req, session: session)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 201 else {
+            if let error = try? JSONDecoder.orbit.decode(ErrorBody.self, from: body) {
+                throw APIError(status: status, code: error.error.code, message: error.error.message)
+            }
+            throw APIError(status: status, code: "upload", message: "Couldn't upload this attachment")
+        }
+        return try JSONDecoder.orbit.decode(ChatAttachment.self, from: body)
+    }
+
+    public func attachmentData(id: String) async throws -> Data { try await send("GET", "v1/attachments/\(id)", as: Data.self, timeout: 120) }
 
     public func archive(_ id: String) async throws { struct R: Decodable { var id: String }; _ = try await send("PATCH", "v1/conversations/\(id)", body: ["archived": true], as: R.self) }
 
@@ -177,6 +199,14 @@ public final class APIClient: @unchecked Sendable {
     public func deleteSchedule(id: String) async throws { struct R: Decodable { var deleted: String }; _ = try await send("DELETE", "v1/schedules/\(id)", as: R.self) }
     public func runSchedule(id: String) async throws -> Schedule { try await send("POST", "v1/schedules/\(id)/run") }
 
+    public func updateTrackedItem(id: String, title: String, notes: String) async throws {
+        struct R: Decodable { var ok: Bool }
+        _ = try await send("PATCH", "v1/responsibilities/\(id)", body: ["title": title, "notes": notes], as: R.self)
+    }
+    public func setResponsibilityPaused(id: String, paused: Bool) async throws {
+        struct R: Decodable { var ok: Bool }
+        _ = try await send("PATCH", "v1/responsibilities/\(id)", body: ["paused": paused], as: R.self)
+    }
     public func setResponsibilityStatus(id: String, status: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("PATCH", "v1/responsibilities/\(id)", body: ["status": status], as: R.self) }
     public func markRead(notificationId: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("POST", "v1/notifications/\(notificationId)/read", as: R.self) }
     public func exportMarkdown() async throws -> Data { try await send("GET", "v1/export.md", as: Data.self) }
@@ -245,17 +275,17 @@ public final class APIClient: @unchecked Sendable {
     /// Send a message and stream the reply (server-sent events). The final `.done` carries the stored
     /// messages — the source of truth — so a dropped stream can always be recovered by sync or by retrying
     /// with the same client message id.
-    public func streamMessage(conversationId: String, content: String, clientMessageId: String) -> AsyncThrowingStream<StreamEvent, Error> {
+    public func streamMessage(conversationId: String, content: String, clientMessageId: String, attachmentIds: [String] = []) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    struct B: Encodable { var content: String; var clientMsgId: String }
+                    struct B: Encodable { var content: String; var clientMsgId: String; var attachmentIds: [String] }
                     var req = URLRequest(url: baseURL.appendingPathComponent("v1/conversations/\(conversationId)/messages"), timeoutInterval: 300)
                     req.httpMethod = "POST"
                     req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    req.httpBody = try JSONEncoder.orbit.encode(B(content: content, clientMsgId: clientMessageId))
+                    req.httpBody = try JSONEncoder.orbit.encode(B(content: content, clientMsgId: clientMessageId, attachmentIds: attachmentIds))
                     let (bytes, resp, keepAlive) = try await Transport.bytes(for: req, session: session)
                     defer { keepAlive?.finishTasksAndInvalidate() }
                     let status = (resp as? HTTPURLResponse)?.statusCode ?? 0

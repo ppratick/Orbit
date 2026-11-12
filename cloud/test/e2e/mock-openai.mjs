@@ -120,11 +120,30 @@ function respond(j) {
   if (instr.includes("morning briefing")) return [text("- Today: nothing scheduled\n- Due soon: dentist")];
   const input = j.input ?? [];
   const last = input[input.length - 1];
+  if (input.some((m)=>m.role==="user" && m.content==="Long tool retrieval fixture")) {
+    const outputs=input.filter((m)=>m.type==="function_call_output").length;
+    return outputs<6 && j.tools?.length ? [call("search_conversations",{query:"fixture evidence"})] : [text("Final answer from the completed results.")];
+  }
+  if (Array.isArray(last?.content) && last.content.some((p)=>p.type==="input_text" && /Inspect attachment fixture/.test(p.text))) {
+    if (!last.content.some((p)=>p.type==="input_image" && p.image_url.startsWith("data:image/png;base64,"))) throw new Error("Photo did not reach the model");
+    if (!last.content.some((p)=>p.type==="input_file" && p.filename==="fixture.pdf" && p.file_data.startsWith("data:application/pdf;base64,"))) throw new Error("PDF did not reach the model");
+    if (!last.content.some((p)=>p.type==="input_text" && p.text.includes("fixture_csv_secret"))) throw new Error("CSV did not reach the model");
+    return [text("I read the photo, PDF and CSV attachments.")];
+  }
+  if (Array.isArray(last?.content) && last.content[0]?.text?.startsWith("Reopened attachment")) {
+    if(!last.content.some((p)=>p.type==="input_text" && p.text.includes("fixture_csv_secret"))) throw new Error("Earlier attachment was not reopened");
+    return [text("I reopened the earlier CSV file.")];
+  }
   if (last?.type === "function_call_output") return [text(`Tool said: ${String(last.output).slice(0, 160)}`)];
   const msg = String(last?.content ?? "");
+  if (/^Reopen attachment (att_[\w-]+)/.test(msg)) return [call("read_attachment",{id:msg.match(/att_[\w-]+/)[0]})];
   if (/^Actually just say/i.test(msg)) return [text("Corrected without saving anything else.")];
   if (/^Stop/i.test(msg)) return [text("Stopped. No further actions taken.")];
   const tools = new Set((j.tools ?? []).flatMap((t) => (t.tools ?? []).map((x) => x.name)));
+  if (/^Background check for tracked item/.test(msg)) return [text("ORBIT_NO_UPDATE")];
+  if (/^Thanks, that is all!/i.test(msg)) return [call("react_to_message",{emoji:"❤️"})];
+  if (/proactive commitment/i.test(msg)) return [call("track_responsibility", {title:"Finish research proposal",kind:"research",why:"You committed to completing the proposal.",next_action:"Review requirements and prepare an outline."})];
+  if (/remind me.*sample task/i.test(msg)) return [call("create_reminder", {title:"Sample task",due:new Date(Date.now()+86400000).toISOString()})];
   if (/^Scheduled task “/.test(msg)) return [text(`Scheduled run done: ${msg.match(/Instructions from the user: (.*)$/s)?.[1] ?? ""}`)];
   if (/^Every weekday at 7:45 check my inbox/i.test(msg)) return [call("create_scheduled_task", { title: "Inbox check", instructions: "Check my inbox and tell me what needs a reply.", repeat: "weekdays", time_of_day: "07:45" })];
   if (/^Pause (sch_[\w-]+)/.test(msg)) return [call("update_scheduled_task", { schedule_id: msg.match(/sch_[\w-]+/)[0], changes: { status: "paused" } })];

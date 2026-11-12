@@ -103,8 +103,8 @@ async function accessToken(env: Env, acct: AccountRow): Promise<string> {
   }
 }
 
-async function gapi<T>(env: Env, acct: AccountRow, path: string, init: RequestInit = {}): Promise<T> {
-  const token = await accessToken(env, acct);
+async function gapi<T>(env: Env, acct: AccountRow, path: string, init: RequestInit = {}, bearer?: string): Promise<T> {
+  const token = bearer ?? await accessToken(env, acct);
   const r = await fetch(path.startsWith("http") ? path : `https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
     ...init,
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(init.headers ?? {}) },
@@ -157,11 +157,14 @@ function toSummary(m: GmailMsg): MailSummary {
 
 export const gmail = {
   async search(env: Env, acct: AccountRow, q: string, max = 10): Promise<MailSummary[]> {
-    const list = await gapi<{ messages?: { id: string }[] }>(env, acct, `messages?${new URLSearchParams({ q, maxResults: String(Math.min(max, 25)) })}`);
+    // Resolve credentials once per search, not once for every result's metadata.
+    // This also avoids repeatedly refreshing an expired token from the same stale account snapshot.
+    const token = await accessToken(env, acct);
+    const list = await gapi<{ messages?: { id: string }[] }>(env, acct, `messages?${new URLSearchParams({ q, maxResults: String(Math.min(max, 25)) })}`, {}, token);
     const ids = (list.messages ?? []).map((m) => m.id);
     const out: MailSummary[] = [];
     for (const id of ids) {
-      const m = await gapi<GmailMsg>(env, acct, `messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject`);
+      const m = await gapi<GmailMsg>(env, acct, `messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject`, {}, token);
       out.push(toSummary(m));
     }
     return out;
@@ -176,6 +179,11 @@ export const gmail = {
       references: header(m.payload, "References"),
       body: extractGmailText(m.payload),
     };
+  },
+
+  async readThread(env: Env, acct: AccountRow, threadId: string): Promise<MailMessage[]> {
+    const thread = await gapi<{messages?:GmailMsg[]}>(env,acct,`threads/${encodeURIComponent(threadId)}?format=full`);
+    return (thread.messages ?? []).sort((a,b)=>Number(a.internalDate)-Number(b.internalDate)).map((m)=>({...toSummary(m),body:extractGmailText(m.payload)}));
   },
 
   async raw(env: Env, acct: AccountRow, mail: OutgoingMail): Promise<{ raw: string; threadId?: string }> {

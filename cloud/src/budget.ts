@@ -2,7 +2,7 @@ import type { Env } from "./env";
 
 /**
  * Counts D1 statements so long-running jobs (heartbeat) stop cleanly before hitting
- * Workers Free's 50-queries-per-invocation limit. Batches are counted per statement (conservative).
+ * Workers Free's 50-queries-per-invocation limit. D1 counts a batch as one query against the per-invocation limit.
  */
 export class QueryBudget {
   used = 0;
@@ -35,7 +35,7 @@ export class QueryBudget {
         if (prop === "prepare") return (q: string) => wrapStmt(target.prepare(q));
         if (prop === "batch")
           return (stmts: D1PreparedStatement[]) => {
-            self.used += stmts.length;
+            self.used++;
             return target.batch(stmts);
           };
         return typeof v === "function" ? v.bind(target) : v;

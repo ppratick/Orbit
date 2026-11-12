@@ -212,3 +212,19 @@ final class TransportTests: XCTestCase {
         XCTAssertFalse(Transport.isTransportFailure(APIError(status: 400, code: "bad_code", message: "x")))
     }
 }
+
+final class AttachmentTests: XCTestCase {
+    @MainActor func testFileOnlyMessageAndAttachmentReferencesSurviveOfflineCache() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = ChatAttachment(id: "att_photo", name: "Photo.jpg", mime: "image/jpeg", size: 1024)
+        let message = Message(id: "m_file", conversationId: "conv_file", role: "user", content: "", meta: .object(["attachments": .array([file.json])]), createdAt: 1)
+        XCTAssertTrue(message.isVisibleChat)
+        let store = OrbitStore(directory: directory)
+        store.upsert(messages: [message], conversationId: "conv_file")
+        store.save()
+        let restored = OrbitStore(directory: directory)
+        XCTAssertEqual(restored.messages[message.id]?.attachments, [file])
+        XCTAssertTrue(try XCTUnwrap(restored.messages[message.id]?.attachments.first).isImage)
+    }
+}

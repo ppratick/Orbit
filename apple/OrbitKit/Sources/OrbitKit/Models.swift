@@ -125,18 +125,18 @@ public struct Schedule: Codable, Identifiable, Hashable, Sendable {
     public var id: String
     public var title: String
     public var instructions: String
+    public var originReason: String?
     public var `repeat`: String          // once | daily | weekdays | weekly | interval
     public var timeOfDay: String?        // "HH:MM"
     public var days: String?             // weekly: "1,3" (0 = Sunday)
     public var intervalHours: Int?
     public var runAt: Millis?
     public var timezone: String
-    public var respectQuietHours: Int
     public var status: String            // active | paused | done
     public var nextRunAt: Millis?
     public var lastRunAt: Millis?
     public var lastFinishedAt: Millis?
-    public var lastStatus: String?       // running | ok | needs_approval | failed | deferred
+    public var lastStatus: String?       // running | ok | needs_approval | failed
     public var lastResult: String?
     public var runCount: Int
     public var source: String
@@ -157,10 +157,9 @@ public struct ScheduleDraft: Encodable, Sendable {
     public var intervalHours: Int?
     public var runAt: Millis?
     public var timezone: String
-    public var respectQuietHours: Bool
-    public init(title: String, instructions: String, repeat: String, timeOfDay: String?, days: [Int]?, intervalHours: Int?, runAt: Millis?, timezone: String, respectQuietHours: Bool) {
+    public init(title: String, instructions: String, repeat: String, timeOfDay: String?, days: [Int]?, intervalHours: Int?, runAt: Millis?, timezone: String) {
         self.title = title; self.instructions = instructions; self.repeat = `repeat`; self.timeOfDay = timeOfDay; self.days = days
-        self.intervalHours = intervalHours; self.runAt = runAt; self.timezone = timezone; self.respectQuietHours = respectQuietHours
+        self.intervalHours = intervalHours; self.runAt = runAt; self.timezone = timezone
     }
 }
 
@@ -173,6 +172,7 @@ public struct Responsibility: Codable, Identifiable, Hashable, Sendable {
     public var dueAt: Millis?
     public var nextCheckAt: Millis?
     public var source: String
+    public var data: JSONValue?
     public var createdAt: Millis
     public var updatedAt: Millis
 }

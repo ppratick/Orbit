@@ -27,6 +27,10 @@ public enum Transport {
         return [.networkConnectionLost, .cannotConnectToHost, .secureConnectionFailed].contains(e.code)
     }
 
+    /// Orbit's API session. Ephemeral, so no HTTP/3 (Alt-Svc) entry is persisted across launches: a stale
+    /// entry made the first requests after a relaunch fail with "network connection lost" or hang on retry.
+    public static let session: URLSession = freshSession()
+
     static func freshSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.waitsForConnectivity = false
@@ -37,7 +41,7 @@ public enum Transport {
         ["GET", "HEAD", "PUT", "DELETE", "OPTIONS"].contains((request.httpMethod ?? "GET").uppercased())
     }
 
-    public static func data(for request: URLRequest, session: URLSession = .shared) async throws -> (Data, URLResponse) {
+    public static func data(for request: URLRequest, session: URLSession = Transport.session) async throws -> (Data, URLResponse) {
         if preferTCP {
             let s = freshSession()
             defer { s.finishTasksAndInvalidate() }
@@ -55,7 +59,7 @@ public enum Transport {
     }
 
     /// Streaming variant. The returned session must stay alive while bytes are read; it is returned so the caller holds it.
-    public static func bytes(for request: URLRequest, session: URLSession = .shared) async throws -> (URLSession.AsyncBytes, URLResponse, URLSession?) {
+    public static func bytes(for request: URLRequest, session: URLSession = Transport.session) async throws -> (URLSession.AsyncBytes, URLResponse, URLSession?) {
         if preferTCP {
             let s = freshSession()
             let (b, r) = try await s.bytes(for: request)

@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { HttpError } from "./http";
 import { MAIN_CONVERSATION_ID, mainConversation } from "./conversation";
-import { newId, now, truncate } from "./util";
+import { newId, now, truncate, sha256Hex } from "./util";
 
 /**
  * Scheduled tasks. A due task becomes a hidden instruction message in the main conversation's
@@ -14,6 +14,8 @@ export const REPEATS: Repeat[] = ["once", "daily", "weekdays", "weekly", "interv
 export interface ScheduleRow {
   id: string;
   title: string;
+  origin_reason?: string | null;
+  dedupe_key?: string | null;
   instructions: string;
   repeat: Repeat;
   time_of_day: string | null;
@@ -21,7 +23,6 @@ export interface ScheduleRow {
   interval_hours: number | null;
   run_at: number | null;
   timezone: string;
-  respect_quiet_hours: number;
   status: "active" | "paused" | "done";
   next_run_at: number | null;
   last_run_at: number | null;
@@ -38,6 +39,7 @@ export interface ScheduleRow {
 
 export interface ScheduleInput {
   title?: string;
+  why?: string;
   instructions?: string;
   repeat?: string;
   time_of_day?: string | null;
@@ -45,7 +47,6 @@ export interface ScheduleInput {
   interval_hours?: number | null;
   run_at?: number | string | null;
   timezone?: string;
-  respect_quiet_hours?: boolean;
   status?: string;
 }
 
@@ -91,36 +92,12 @@ const parseHM = (v: string | null | undefined) => {
   return m ? { h: +m[1], mi: +m[2] } : null;
 };
 
-/** Quiet hours like "22:00-07:00" (may wrap past midnight). */
-export function parseQuiet(v: string | null | undefined): { start: number; end: number } | null {
-  const [a, b] = (v ?? "").split("-");
-  const s = parseHM(a), e = parseHM(b);
-  if (!s || !e) return null;
-  const start = s.h * 60 + s.mi, end = e.h * 60 + e.mi;
-  return start === end ? null : { start, end };
-}
-export function inQuiet(quiet: { start: number; end: number }, tz: string, t: number): boolean {
-  const p = partsIn(tz, t);
-  const m = p.h * 60 + p.mi;
-  return quiet.start < quiet.end ? m >= quiet.start && m < quiet.end : m >= quiet.start || m < quiet.end;
-}
-/** First moment after `t` when quiet hours end. */
-export function quietEnd(quiet: { start: number; end: number }, tz: string, t: number): number {
-  const p = partsIn(tz, t);
-  let at = zonedToUtc(tz, p.y, p.m, p.d, Math.floor(quiet.end / 60), quiet.end % 60);
-  if (at <= t) {
-    const next = partsIn(tz, at + DAY);
-    at = zonedToUtc(tz, next.y, next.m, next.d, Math.floor(quiet.end / 60), quiet.end % 60);
-  }
-  return at;
-}
-
 const daySet = (s: Pick<ScheduleRow, "repeat" | "days">): number[] =>
   s.repeat === "daily" ? [0, 1, 2, 3, 4, 5, 6]
     : s.repeat === "weekdays" ? [1, 2, 3, 4, 5]
       : (s.days ?? "").split(",").map((x) => +x).filter((x) => x >= 0 && x <= 6);
 
-/** Next time the rule fires strictly after `after`, before quiet hours are applied. */
+/** Next time the rule fires strictly after `after`. */
 export function nextOccurrence(s: Pick<ScheduleRow, "repeat" | "time_of_day" | "days" | "interval_hours" | "run_at" | "timezone">, after: number, prev?: number | null): number | null {
   if (s.repeat === "once") return s.run_at && s.run_at > after ? s.run_at : null;
   if (s.repeat === "interval") {
@@ -139,14 +116,6 @@ export function nextOccurrence(s: Pick<ScheduleRow, "repeat" | "time_of_day" | "
     if (at > after && days.includes(partsIn(s.timezone, at).wd)) return at;
   }
   return null;
-}
-
-/** Next run including quiet-hours deferral. */
-export function computeNextRun(s: Parameters<typeof nextOccurrence>[0] & { respect_quiet_hours: number }, quiet: string | null, after: number, prev?: number | null): number | null {
-  const t = nextOccurrence(s, after, prev);
-  if (t == null) return null;
-  const q = parseQuiet(quiet);
-  return q && s.respect_quiet_hours && inQuiet(q, s.timezone, t) ? quietEnd(q, s.timezone, t) : t;
 }
 
 /** "Every weekday at 8:00 AM (Eastern Time)" — for chat and tool results. */
@@ -171,10 +140,6 @@ export function describeRule(s: Pick<ScheduleRow, "repeat" | "time_of_day" | "da
 }
 
 // ── Validation & storage ─────────────────────────────────────────────────────
-async function quietHours(env: Env): Promise<string | null> {
-  return (await env.DB.prepare("SELECT content FROM profile_sections WHERE id = 'quiet_hours'").first<{ content: string }>())?.content || null;
-}
-
 function normalize(input: ScheduleInput, base: Partial<ScheduleRow>, defaultTz: string): Omit<ScheduleRow, "id" | "status" | "next_run_at" | "last_run_at" | "last_finished_at" | "last_status" | "last_result" | "last_message_id" | "run_count" | "source" | "created_at" | "updated_at" | "deleted_at"> {
   const title = (input.title ?? base.title ?? "").trim().slice(0, 120);
   const instructions = (input.instructions ?? base.instructions ?? "").trim().slice(0, 4000);
@@ -195,8 +160,7 @@ function normalize(input: ScheduleInput, base: Partial<ScheduleRow>, defaultTz: 
   if (["daily", "weekdays", "weekly"].includes(repeat) && !parseHM(time_of_day)) throw new HttpError(400, "time_of_day must be HH:MM", "validation");
   if (repeat === "weekly" && !days) throw new HttpError(400, "A weekly task needs days (0 = Sunday … 6 = Saturday)", "validation");
   if (repeat === "interval" && !(interval_hours && interval_hours >= 1 && interval_hours <= 168)) throw new HttpError(400, "interval_hours must be 1–168", "validation");
-  const respect = input.respect_quiet_hours !== undefined ? (input.respect_quiet_hours ? 1 : 0) : base.respect_quiet_hours ?? 1;
-  return { title, instructions, repeat, time_of_day, days, interval_hours, run_at, timezone, respect_quiet_hours: respect };
+  return { title, instructions, repeat, time_of_day, days, interval_hours, run_at, timezone };
 }
 
 export async function listSchedules(env: Env, includeDeleted = false): Promise<ScheduleRow[]> {
@@ -210,16 +174,22 @@ export async function getSchedule(env: Env, id: string): Promise<ScheduleRow> {
   return s;
 }
 
-export async function createSchedule(env: Env, input: ScheduleInput, source: "user" | "conversation"): Promise<ScheduleRow> {
+export async function createSchedule(env: Env, input: ScheduleInput, source: "user" | "conversation" | "orbit"): Promise<ScheduleRow> {
   const v = normalize(input, {}, env.ORBIT_TIMEZONE);
   const t = now();
-  const next = computeNextRun(v, await quietHours(env), t);
+  const next = nextOccurrence(v, t);
   if (next == null) throw new HttpError(400, "That schedule never runs (is the time in the past?)", "validation");
+  const dedupe = source === "user" ? null : await sha256Hex([v.instructions.toLowerCase().replace(/\s+/g," ").trim(), v.repeat, v.time_of_day, v.days, v.interval_hours, v.run_at, v.timezone].join("|"));
+  if (dedupe) {
+    const existing = await env.DB.prepare("SELECT * FROM schedules WHERE dedupe_key = ?").bind(dedupe).first<ScheduleRow>();
+    if (existing?.deleted_at) throw new HttpError(409, "The user removed this automation; do not recreate it unless asked", "removed");
+    if (existing) return existing;
+  }
   const id = newId("sch");
   await env.DB.prepare(
-    `INSERT INTO schedules (id, title, instructions, repeat, time_of_day, days, interval_hours, run_at, timezone, respect_quiet_hours, status, next_run_at, source, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
-  ).bind(id, v.title, v.instructions, v.repeat, v.time_of_day, v.days, v.interval_hours, v.run_at, v.timezone, v.respect_quiet_hours, next, source, t, t).run();
+    `INSERT INTO schedules (id, title, instructions, repeat, time_of_day, days, interval_hours, run_at, timezone, status, next_run_at, source, created_at, updated_at, origin_reason, dedupe_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+  ).bind(id, v.title, v.instructions, v.repeat, v.time_of_day, v.days, v.interval_hours, v.run_at, v.timezone, next, source, t, t, source === "user" ? null : truncate(input.why || "A recurring need from your conversation.", 500), dedupe).run();
   return getSchedule(env, id);
 }
 
@@ -232,15 +202,15 @@ export async function updateSchedule(env: Env, id: string, input: ScheduleInput)
   const t = now();
   let next: number | null = null;
   if (status !== "paused") {
-    next = computeNextRun(v, await quietHours(env), t);
+    next = nextOccurrence(v, t);
     // Editing or resuming a finished one-time task with a new future time brings it back.
     status = next == null ? "done" : "active";
     if (next == null && input.status === "active") throw new HttpError(400, "That schedule has no future run", "validation");
   }
   await env.DB.prepare(
     `UPDATE schedules SET title = ?, instructions = ?, repeat = ?, time_of_day = ?, days = ?, interval_hours = ?, run_at = ?, timezone = ?,
-       respect_quiet_hours = ?, status = ?, next_run_at = ?, updated_at = ? WHERE id = ?`,
-  ).bind(v.title, v.instructions, v.repeat, v.time_of_day, v.days, v.interval_hours, v.run_at, v.timezone, v.respect_quiet_hours, status, next, t, id).run();
+       status = ?, next_run_at = ?, updated_at = ? WHERE id = ?`,
+  ).bind(v.title, v.instructions, v.repeat, v.time_of_day, v.days, v.interval_hours, v.run_at, v.timezone, status, next, t, id).run();
   return getSchedule(env, id);
 }
 
@@ -248,16 +218,6 @@ export async function deleteSchedule(env: Env, id: string) {
   await getSchedule(env, id);
   await env.DB.prepare("UPDATE schedules SET deleted_at = ?, status = 'paused', next_run_at = NULL, updated_at = ? WHERE id = ?").bind(now(), now(), id).run();
   return { deleted: id };
-}
-
-/** Quiet hours changed: re-plan every active schedule against the new window. */
-export async function replanAll(env: Env) {
-  const quiet = await quietHours(env);
-  const t = now();
-  const rows = (await listSchedules(env)).filter((s) => s.status === "active");
-  if (!rows.length) return;
-  await env.DB.batch(rows.map((s) => env.DB.prepare("UPDATE schedules SET next_run_at = ?, updated_at = ? WHERE id = ?")
-    .bind(computeNextRun(s, quiet, t), t, s.id)));
 }
 
 // ── Running ──────────────────────────────────────────────────────────────────
@@ -290,35 +250,43 @@ export async function runScheduleNow(env: Env, id: string): Promise<ScheduleRow>
   return getSchedule(env, id);
 }
 
+/** Built-ins are real schedules. Soft deletion or pausing is respected forever. */
+export async function ensureDefaultSchedules(env: Env) {
+  const definitions = [
+    { id: "sch_orbit_morning", title: "Morning briefing", time: "07:00", why: "A daily overview of your calendar, deadlines and things needing attention.",
+      instructions: "Give me my morning briefing in under 120 words: today's calendar, upcoming deadlines, important email, open follow-ups and pending approvals. Check relevant sources, respect my profile and use my local time. Don't repeat resolved items." },
+    { id: "sch_orbit_review", title: "Daily review", time: "18:00", why: "Keep tracked commitments and ongoing goals current, without extra noise.",
+      instructions: "Review my recent conversations, tracked responsibilities and relevant account changes. Automatically track clear commitments and concrete deadlines, merge duplicates, close resolved items, and set sensible next checks. Create a recurring schedule only for a clear ongoing need supported by my context. Explain why any new automation exists. Do not resurrect items I stopped. Work quietly: reply exactly ORBIT_NO_UPDATE unless you have a meaningful new finding, useful preparation or a decision for me. Never repeat unchanged updates." },
+  ];
+  await env.DB.batch(definitions.map((d) => env.DB.prepare(`INSERT OR IGNORE INTO schedules
+    (id,title,instructions,repeat,time_of_day,timezone,status,next_run_at,source,created_at,updated_at,origin_reason,dedupe_key)
+    VALUES (?,?,?,'daily',?,?,'active',?,'orbit',?,?,?,?)`)
+    .bind(d.id,d.title,d.instructions,d.time,env.ORBIT_TIMEZONE,nextOccurrence({repeat:"daily",time_of_day:d.time,timezone:env.ORBIT_TIMEZONE,days:null,interval_hours:null,run_at:null},now()),now(),now(),d.why,d.id)));
+}
+
 /**
- * Cron tick: queue every due schedule, then advance it. Quiet hours defer a run to their end.
+ * Cron tick: queue every due schedule, then advance it.
  * Returns how many runs were queued (the caller then drains the conversation inbox).
  */
-export async function runDueSchedules(env: Env): Promise<{ queued: number; deferred: number }> {
+export async function runDueSchedules(env: Env): Promise<{ queued: number }> {
+  await ensureDefaultSchedules(env);
   const t = now();
-  const due = await env.DB.prepare("SELECT * FROM schedules WHERE status = 'active' AND deleted_at IS NULL AND next_run_at <= ? ORDER BY next_run_at LIMIT 5")
+  const due = await env.DB.prepare("SELECT * FROM schedules WHERE status = 'active' AND deleted_at IS NULL AND next_run_at <= ? ORDER BY next_run_at LIMIT 3")
     .bind(t).all<ScheduleRow>();
   // A run whose Worker died never reports back; don't leave it "running" forever.
   await env.DB.prepare("UPDATE schedules SET last_status = 'failed', last_result = 'The run was interrupted before it finished.' WHERE last_status = 'running' AND last_run_at < ?")
     .bind(t - 30 * MIN).run();
-  if (!due.results.length) return { queued: 0, deferred: 0 };
-  const quiet = await quietHours(env);
-  const q = parseQuiet(quiet);
-  let queued = 0, deferred = 0;
+  if (!due.results.length) return { queued: 0 };
+  let queued = 0;
   for (const s of due.results) {
-    if (q && s.respect_quiet_hours && inQuiet(q, s.timezone, t)) {
-      await env.DB.prepare("UPDATE schedules SET next_run_at = ?, last_status = 'deferred', updated_at = ? WHERE id = ?").bind(quietEnd(q, s.timezone, t), t, s.id).run();
-      deferred++;
-      continue;
-    }
     const msg = await enqueue(env, s, String(s.next_run_at), false);
-    const next = computeNextRun(s, quiet, t, s.next_run_at);
+    const next = nextOccurrence(s, t, s.next_run_at);
     await env.DB.prepare(`UPDATE schedules SET next_run_at = ?, status = ?, last_run_at = ?, last_status = 'running', last_result = NULL,
         last_message_id = COALESCE(?, last_message_id), run_count = run_count + 1, updated_at = ? WHERE id = ?`)
       .bind(next, next == null ? "done" : "active", t, msg, t, s.id).run();
     if (msg) queued++;
   }
-  return { queued, deferred };
+  return { queued };
 }
 
 /** After the turn for a scheduled run finishes: record its outcome on the schedule. */
@@ -331,7 +299,6 @@ export function outcomeFor(reply: string, toolResults: string[]): { status: stri
 export function scheduleForModel(s: ScheduleRow) {
   return {
     id: s.id, title: s.title, instructions: s.instructions, status: s.status, rule: describeRule(s), timezone: s.timezone,
-    respects_quiet_hours: !!s.respect_quiet_hours,
     next_run: s.next_run_at ? new Intl.DateTimeFormat("en-US", { timeZone: s.timezone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(s.next_run_at) : null,
     last_status: s.last_status, last_result: s.last_result,
   };

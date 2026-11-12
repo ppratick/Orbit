@@ -51,25 +51,17 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
         guard Self.remindersAuthorized else { throw ExecutorError("Reminders access not granted on this device (Settings → Privacy → Reminders)") }
     }
 
-    func orbitCalendar() throws -> EKCalendar {
-        if let c = store.calendars(for: .event).first(where: { $0.title == orbitCalendarName && $0.allowsContentModifications }) { return c }
-        let cal = EKCalendar(for: .event, eventStore: store)
-        cal.title = orbitCalendarName
-        // Prefer the account that holds the default calendar (usually iCloud) so the calendar syncs to all devices.
-        guard let source = store.defaultCalendarForNewEvents?.source ?? store.sources.first(where: { $0.sourceType == .calDAV }) ?? store.sources.first(where: { $0.sourceType == .local }) else {
-            throw ExecutorError("No calendar account available to create the \(orbitCalendarName) calendar")
-        }
-        cal.source = source
-        try store.saveCalendar(cal, commit: true)
-        return cal
-    }
-
     private func calendar(named name: String?) throws -> EKCalendar {
-        guard let name, !name.isEmpty, name != orbitCalendarName else { return try orbitCalendar() }
-        guard let c = store.calendars(for: .event).first(where: { $0.title == name && $0.allowsContentModifications }) else {
-            throw ExecutorError("Calendar \"\(name)\" not found or read-only")
+        let calendars = store.calendars(for: .event).filter { $0.allowsContentModifications }
+        if let name, !name.isEmpty {
+            guard let calendar = calendars.first(where: { $0.title == name }) else {
+                throw ExecutorError("Existing calendar \"\(name)\" not found or read-only. Choose one of your current calendars.")
+            }
+            return calendar
         }
-        return c
+        if let calendar = store.defaultCalendarForNewEvents, calendar.title != orbitCalendarName { return calendar }
+        if let calendar = calendars.first(where: { $0.title != orbitCalendarName }) { return calendar }
+        throw ExecutorError("Choose an existing calendar for this event. Orbit won't create a calendar automatically.")
     }
 
     private func createEvent(_ task: OrbitTask, _ p: JSONValue) throws -> JSONValue {
@@ -193,7 +185,12 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
         guard Self.eventsAuthorized else { return [] }
         let start = Calendar.current.startOfDay(for: Date())
         let end = start.addingTimeInterval(TimeInterval(days) * 86_400)
-        return store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: nil)).prefix(250).map { e in
+        let calendars: [JSONValue] = store.calendars(for: .event).map { c in
+            .object(["kind": .string("calendar"), "calendar_id": .string(c.calendarIdentifier), "calendar": .string(c.title),
+                     "account": .string(c.source?.title ?? ""), "writable": .bool(c.allowsContentModifications),
+                     "is_default": .bool(c.calendarIdentifier == store.defaultCalendarForNewEvents?.calendarIdentifier)])
+        }
+        let events: [JSONValue] = store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: nil)).prefix(250).map { e in
             .object([
                 "id": .string(e.eventIdentifier ?? ""), "title": .string(e.title ?? ""), "start": .string(ISO.format(e.startDate)),
                 "end": .string(ISO.format(e.endDate)), "all_day": .bool(e.isAllDay), "calendar": .string(e.calendar.title),
@@ -204,6 +201,7 @@ public final class EventKitExecutor: DeviceExecutor, @unchecked Sendable {
                 "by_orbit": .bool(e.url?.scheme == "orbit"),
             ])
         }
+        return calendars + events
     }
 
     public func remindersSnapshot() async -> [JSONValue] {

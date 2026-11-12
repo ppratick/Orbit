@@ -27,9 +27,9 @@ export function fromB64(s: string): Uint8Array {
 }
 
 export function toB64(b: Uint8Array): string {
-  let s = "";
-  for (const x of b) s += String.fromCharCode(x);
-  return btoa(s);
+  const pieces:string[]=[];
+  for(let i=0;i<b.length;i+=32768) pieces.push(String.fromCharCode(...b.subarray(i,i+32768)));
+  return btoa(pieces.join(""));
 }
 
 export async function sha256Hex(input: string): Promise<string> {

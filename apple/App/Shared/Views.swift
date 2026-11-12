@@ -1,5 +1,7 @@
 import OrbitKit
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
 import AVFAudio
@@ -525,6 +527,11 @@ struct ChatView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: OrbitStore
     let conversationId: String
+    @State private var showingFilePicker = false
+    @State private var showingPhotos = false
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var dropTargeted = false
+    private var canSend: Bool { (!model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.pendingAttachments.isEmpty) && !model.preparingAttachments }
     @State private var selectedModel = "Auto"
     @State private var showingModelPicker = false
     /// Follow the newest content until the reader deliberately scrolls up; resume at the bottom.
@@ -559,10 +566,7 @@ struct ChatView: View {
                                 if let live = model.streaming[conversationId], !live.isEmpty {
                                     MessageBubble(message: Message(id: "streaming", conversationId: conversationId, role: "assistant", content: live, meta: nil, createdAt: 0))
                                 } else {
-                                    ProgressView().padding(.leading, 12)
-                                }
-                                if let status = model.turnStatus[conversationId] {
-                                    Text(status).font(.caption).foregroundStyle(.secondary).padding(.leading, 12)
+                                    OrbitThinking(status: model.turnStatus[conversationId] ?? "Thinking")
                                 }
                             }
                             .id("typing")
@@ -614,6 +618,8 @@ struct ChatView: View {
                 .onChange(of: store.pendingApprovals.map(\.id)) { old, new in if !Set(new).isSubset(of: Set(old)) { noteNewContent() } }
             }
             VStack(alignment: .leading, spacing: 8) {
+                if !model.pendingAttachments.isEmpty { AttachmentDraftStrip() }
+                if model.preparingAttachments { Label("Adding attachments…", systemImage: "paperclip").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 6) }
                 TextField("Ask Orbit anything…", text: $model.chatDraft, axis: .vertical)
                     #if os(macOS)
                     .lineLimit(1...6).font(.system(size: 14)).frame(minHeight: 28, alignment: .topLeading)
@@ -628,6 +634,14 @@ struct ChatView: View {
                     .onSubmit(sendDraft)
                     .padding(.horizontal, 6).padding(.top, 4)
                 HStack(spacing: 10) {
+                    Menu {
+                        Button { showingPhotos = true } label: { Label("Photos", systemImage: "photo") }
+                        Button { showingFilePicker = true } label: { Label("Choose files", systemImage: "doc") }
+                    } label: {
+                        Image(systemName: "plus").font(.system(size: 19, weight: .medium)).frame(width: 34, height: 40)
+                    }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Add photos or files")
+                    .disabled(model.preparingAttachments || model.pendingAttachments.count >= 6)
                     Button {
                         #if os(iOS)
                         composerFocused = false
@@ -704,8 +718,8 @@ struct ChatView: View {
                     .accessibilityLabel(dictation.isRecording ? "Stop dictation" : "Dictate message")
                     .disabled(dictation.isStarting || dictation.isFinishing)
                     #endif
-                    if model.sending.contains(conversationId), model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        ProgressView().controlSize(.small).frame(width: 40, height: 40)
+                    if model.sending.contains(conversationId), model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, model.pendingAttachments.isEmpty {
+                        OrbitThinkingDots().frame(width: 40, height: 40)
                             .accessibilityLabel("Orbit is replying")
                     } else {
                         Button(action: sendDraft) {
@@ -715,8 +729,8 @@ struct ChatView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Send message")
-                        .disabled(model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .opacity(model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.35 : 1)
+                        .disabled(!canSend)
+                        .opacity(canSend ? 1 : 0.35)
                         .keyboardShortcut(.return, modifiers: .command)
                     }
                 }.foregroundStyle(.white.opacity(0.75))
@@ -731,6 +745,38 @@ struct ChatView: View {
             .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(composerFocused ? Color.purple.opacity(0.35) : .clear))
             .frame(maxWidth: 760)
             .padding(.horizontal, 20).padding(.bottom, 12).padding(.top, 8)
+        }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 24).strokeBorder(.blue.opacity(0.8), style: StrokeStyle(lineWidth: 2, dash: [7]))
+                    .padding(12).allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $dropTargeted) { model.importProviders($0) }
+        #if os(macOS)
+        .onPasteCommand(of: [.image, .fileURL]) { _ = model.importProviders($0) }
+        #endif
+        .fileImporter(isPresented: $showingFilePicker, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls): model.importAttachments(urls)
+            case .failure(let error): model.banner = error.localizedDescription
+            }
+        }
+        .photosPicker(isPresented: $showingPhotos, selection: $photoItems, maxSelectionCount: max(1, 6 - model.pendingAttachments.count), matching: .images)
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
+            Task {
+                model.preparingAttachments = true
+                defer { model.preparingAttachments = false; photoItems = [] }
+                for item in items {
+                    do {
+                        guard let data = try await item.loadTransferable(type: Data.self) else { throw AttachmentIssue.invalidPhoto }
+                        let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+                        let draft = try await Task.detached { try AttachmentDraft.prepare(name: "Photo.\(ext)", data: data) }.value
+                        model.addAttachment(draft)
+                    } catch { model.banner = error.localizedDescription }
+                }
+            }
         }
         .task(id: store.pendingApprovals.map(\.id)) { await model.loadApprovalDetails() }
         #if os(iOS)
@@ -777,12 +823,14 @@ struct ChatView: View {
         }
         #endif
         let draft = model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !draft.isEmpty else { return }
+        guard canSend else { return }
+        let files = model.pendingAttachments
+        model.pendingAttachments = []
         let hasOverride = draft.lowercased().hasPrefix("/luna ") || draft.lowercased().hasPrefix("/sol ")
         let prefix = selectedModel == "Auto" || hasOverride ? "" : "/\(selectedModel.lowercased()) "
         model.chatDraft = ""
         scrollRequest += 1
-        Task { await model.send(prefix + draft, in: conversationId) }
+        Task { await model.send(prefix + draft, in: conversationId, attachments: files) }
     }
 
     // MARK: Scrolling
@@ -873,6 +921,36 @@ private extension View {
     }
 }
 
+struct OrbitThinkingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var animate = false
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3) { index in
+                Circle().fill(Color.white.opacity(animate ? 0.75 : 0.25)).frame(width: 5, height: 5)
+                    .offset(y: animate && !reduceMotion ? -2 : 0)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.65).repeatForever(autoreverses: true).delay(Double(index) * 0.16), value: animate)
+            }
+        }
+        .onAppear { animate = true }.accessibilityHidden(true)
+    }
+}
+
+struct OrbitThinking: View {
+    var status: String
+    var body: some View {
+        HStack(spacing: 10) {
+            OrbitThinkingDots()
+            Text(status).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                .contentTransition(.opacity)
+        }
+        .padding(.horizontal, 15).padding(.vertical, 11)
+        .background(.white.opacity(0.045), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.05), lineWidth: 0.5))
+        .accessibilityElement(children: .ignore).accessibilityLabel(status)
+    }
+}
+
 struct MessageBubble: View {
     let message: Message
     @State private var showingDetails = false
@@ -882,14 +960,16 @@ struct MessageBubble: View {
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 5) {
             if let title = message.meta?["schedule"]?["title"]?.string {
                 Label("Scheduled · \(title)", systemImage: "calendar.badge.clock")
                     .font(.system(size: OrbitTheme.isMac ? 11 : 12, weight: .medium))
                     .foregroundStyle(ScheduledView.tint.opacity(0.9))
                     .padding(.leading, 12)
             }
+            ForEach(message.attachments) { attachment in AttachmentCard(attachment: attachment) }
             // Rendered as plain text (never Markdown), with links detected — like a text message.
+            if !message.content.isEmpty {
             Text(PlainText.attributed(message.content))
                 #if os(macOS)
                 .textSelection(.enabled)
@@ -905,6 +985,18 @@ struct MessageBubble: View {
                 #if os(iOS)
                 .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 22))
                 #endif
+                .overlay(alignment: .topTrailing) {
+                    if isUser, let emoji = message.meta?["reaction"]?["emoji"]?.string {
+                        Text(emoji)
+                            .font(.system(size: OrbitTheme.isMac ? 15 : 18))
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(OrbitPalette.assistantBubble, in: Capsule())
+                            .overlay(Capsule().stroke(Color.black, lineWidth: 2))
+                            .offset(x: 6, y: -14)
+                            .accessibilityLabel("Orbit reacted \(emoji)")
+                    }
+                }
+                .padding(.top, isUser && message.meta?["reaction"]?["emoji"]?.string != nil ? 10 : 0)
                 // Hold (or right-click on Mac) for actions; answer details live here, out of the way.
                 .contextMenu {
                     Button { copy() } label: { Label("Copy", systemImage: "doc.on.doc") }
@@ -924,6 +1016,7 @@ struct MessageBubble: View {
                             #endif
                     }
                 }
+            }
             }
             if !isUser { Spacer(minLength: 40) }
         }
@@ -1437,6 +1530,9 @@ struct MemoryView: View {
     @State private var query = ""
     @State private var newText = ""
     @State private var showAdd = false
+    @State private var editingTracked: Responsibility?
+    @State private var trackedTitle = ""
+    @State private var trackedNotes = ""
     @State private var editing: Memory?
     @State private var editText = ""
     @FocusState private var searchFocused: Bool
@@ -1479,6 +1575,26 @@ struct MemoryView: View {
                 editing = nil
                 Task { await model.perform { try await $0.updateMemory(id: memory.id, content: content) } }
             } cancel: { editing = nil }
+        }
+        .sheet(item: $editingTracked) { item in
+            VStack(spacing: 20) {
+                HStack {
+                    Button("Cancel") { editingTracked = nil }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Edit tracked item").font(.headline)
+                    Spacer()
+                    Button("Save") {
+                        let title = trackedTitle, notes = trackedNotes
+                        editingTracked = nil
+                        Task { await model.perform { try await $0.updateTrackedItem(id: item.id, title: title, notes: notes) } }
+                    }.buttonStyle(.plain).disabled(trackedTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                TextField("Title", text: $trackedTitle).textFieldStyle(.roundedBorder)
+                TextField("Notes", text: $trackedNotes, axis: .vertical).lineLimit(4...10).textFieldStyle(.roundedBorder)
+                Spacer(minLength: 0)
+            }
+            .padding(24).frame(minWidth: OrbitTheme.isMac ? 400 : nil, minHeight: OrbitTheme.isMac ? 280 : nil)
+            .presentationDetents([.medium, .large]).preferredColorScheme(.dark)
         }
         .refreshable { await model.tick() }
     }
@@ -1595,6 +1711,18 @@ struct MemoryView: View {
             OrbitIconTile(symbol: trackingIcon(responsibility.kind), tint: overdue ? Color(red: 0.95, green: 0.38, blue: 0.3) : Color(red: 0.55, green: 0.4, blue: 0.95))
             VStack(alignment: .leading, spacing: 4) {
                 Text(responsibility.title).font(OrbitTheme.rowTitle).fixedSize(horizontal: false, vertical: true)
+                if responsibility.source != "user" {
+                    Text("Added by Orbit").font(OrbitTheme.footnote).foregroundStyle(.tertiary)
+                }
+                if let why = responsibility.data?["why"]?.string, !why.isEmpty {
+                    Text(why).font(OrbitTheme.footnote).foregroundStyle(.secondary).lineLimit(2)
+                }
+                if let action = responsibility.data?["next_action"]?.string, !action.isEmpty {
+                    Text(action).font(OrbitTheme.footnote).foregroundStyle(.secondary).lineLimit(2)
+                }
+                if responsibility.data?["paused"]?.bool == true {
+                    Text("Paused").font(OrbitTheme.footnote).foregroundStyle(.secondary)
+                }
                 HStack(spacing: 6) {
                     if let due = responsibility.dueAt {
                         OrbitBadge(text: (overdue ? "Overdue · " : "Due ") + due.date.formatted(.dateTime.month(.abbreviated).day().hour().minute()),
@@ -1620,6 +1748,13 @@ struct MemoryView: View {
     }
 
     @ViewBuilder private func trackingActions(_ responsibility: Responsibility) -> some View {
+        Button {
+            trackedTitle = responsibility.title; trackedNotes = responsibility.notes; editingTracked = responsibility
+        } label: { Label("Edit", systemImage: "pencil") }
+        let paused = responsibility.data?["paused"]?.bool == true
+        Button {
+            Task { await model.perform { try await $0.setResponsibilityPaused(id: responsibility.id, paused: !paused) } }
+        } label: { Label(paused ? "Resume checks" : "Pause checks", systemImage: paused ? "play" : "pause") }
         Button { Task { await model.perform { try await $0.setResponsibilityStatus(id: responsibility.id, status: "done") } } } label: { Label("Mark done", systemImage: "checkmark") }
         Button(role: .destructive) { Task { await model.perform { try await $0.setResponsibilityStatus(id: responsibility.id, status: "cancelled") } } } label: { Label("Stop tracking", systemImage: "xmark") }
     }

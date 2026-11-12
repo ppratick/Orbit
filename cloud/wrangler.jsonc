@@ -9,8 +9,8 @@
   "compatibility_flags": ["nodejs_compat"],
   "services": [{ "binding": "SELF", "service": "orbit" }],
   "observability": { "enabled": true },
-  // Heartbeat: fires every 10 min and rotates 3 phases (email / responsibilities / briefing),
-  // so each phase runs every ~30 min while staying under Free-plan per-invocation limits.
+  // Source polling runs in independent invocations every ten minutes.
+  // Due schedules and adaptive goal checks are dispatched every minute.
   "triggers": { "crons": ["*/10 * * * *", "* * * * *"] },
   "d1_databases": [
     {

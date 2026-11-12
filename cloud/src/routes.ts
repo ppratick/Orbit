@@ -1,3 +1,4 @@
+import { uploadAttachment, attachmentBytes, attachmentMetadata, publicAttachment, MAX_ATTACHMENT, type Attachment } from "./attachments";
 import { mainConversation, MAIN_CONVERSATION_ID } from "./conversation";
 import type { Env } from "./env";
 import { HttpError, json, readJson, Router, str } from "./http";
@@ -16,7 +17,7 @@ import { github } from "./connectors/github";
 import { canvasApi } from "./connectors/canvas";
 import { untrusted } from "./untrusted";
 import { acceptSuggestion, dismissSuggestion, getProfile, SECTION_MAX, setSection } from "./profile";
-import { createSchedule, deleteSchedule, listSchedules, replanAll, runScheduleNow, updateSchedule, type ScheduleInput } from "./schedules";
+import { createSchedule, deleteSchedule, listSchedules, runScheduleNow, updateSchedule, type ScheduleInput } from "./schedules";
 import { resumeConversations } from "./agent/agent";
 import { newId, now, parseJson, truncate } from "./util";
 
@@ -73,6 +74,27 @@ router.on("DELETE", "/v1/devices/:id", async (_r, p, c) => {
   return json({ ok: true });
 });
 
+// Private attachment bytes are fetched separately and never included in sync payloads.
+router.on("POST", "/v1/conversations/:id/attachments", async (r,p,c) => {
+  if(Number(r.headers.get("content-length"))>MAX_ATTACHMENT) throw new HttpError(413,"Files must be 5 MB or smaller","attachment_size");
+  const reader=r.body?.getReader(); if(!reader) throw new HttpError(400,"File data is required","validation");
+  const parts:Uint8Array[]=[]; let size=0;
+  for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>MAX_ATTACHMENT){await reader.cancel();throw new HttpError(413,"Files must be 5 MB or smaller","attachment_size");}parts.push(value);}
+  const bytes=new Uint8Array(size); let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.length;}
+  const name=new URL(r.url).searchParams.get("filename")??"";
+  return json(publicAttachment(await uploadAttachment(c.env,p.id,name,bytes)),201);
+});
+router.on("GET", "/v1/attachments/:id", async (_r,p,c) => {
+  const a=await c.env.DB.prepare("SELECT * FROM attachments WHERE id=?").bind(p.id).first<Attachment>();
+  if(!a) throw new HttpError(404,"Attachment not found","not_found");
+  const bytes=await attachmentBytes(c.env,p.id);
+  return new Response(bytes,{headers:{"content-type":a.mime,"content-length":String(bytes.length),"content-disposition":`attachment; filename*=UTF-8''${encodeURIComponent(a.name)}`,"cache-control":"private, no-store","x-content-type-options":"nosniff"}});
+});
+router.on("DELETE", "/v1/attachments/:id", async (_r,p,c) => {
+  await c.env.DB.prepare("DELETE FROM attachments WHERE id=? AND message_id IS NULL").bind(p.id).run();
+  return json({ok:true});
+});
+
 // ── Conversations ────────────────────────────────────────────────────────────
 router.on("POST", "/v1/conversation", async (_r, _p, c) => json(await mainConversation(c.env)));
 router.on("GET", "/v1/conversations", async (r, _p, c) => {
@@ -119,11 +141,13 @@ router.on("POST", "/v1/conversations/:id/resume", async (r, p, c) => {
   return chatRequest(r, p.id, c, true);
 });
 async function chatRequest(r: Request, conversationId: string, c: Ctx, resume: boolean) {
-  const b = resume ? { content: "", client_msg_id: undefined } : await readJson<{ content: string; client_msg_id?: string }>(r);
-  const content = resume ? "" : str(b.content, "content", { max: 20000 });
+  const b = resume ? { content: "", client_msg_id: undefined } : await readJson<{ content: string; client_msg_id?: string; attachment_ids?:string[] }>(r);
+  const attachmentIds = "attachment_ids" in b ? b.attachment_ids ?? [] : [];
+  if(!resume) await attachmentMetadata(c.env,conversationId,attachmentIds);
+  const content = resume ? "" : str(b.content, "content", { max: 20000, optional:attachmentIds.length>0 });
   const clientId = b.client_msg_id ? String(b.client_msg_id).slice(0, 80) : null;
   if (!(r.headers.get("accept") ?? "").includes("text/event-stream")) {
-    const res = resume ? await resumeConversation(c.env, conversationId) : await runTurn(c.env, conversationId, content, clientId, deviceId(c));
+    const res = resume ? await resumeConversation(c.env, conversationId) : await runTurn(c.env, conversationId, content, clientId, deviceId(c), "user", undefined, attachmentIds);
     return json(res, res.replayed ? 200 : 201);
   }
   // Streaming reply (server-sent events): status/tool/delta events while the turn runs, then `done`
@@ -143,7 +167,7 @@ async function chatRequest(r: Request, conversationId: string, c: Ctx, resume: b
   };
   const work = (async () => {
     try {
-      const res = resume ? await resumeConversation(c.env, conversationId, send) : await runTurn(c.env, conversationId, content, clientId, deviceId(c), "user", send);
+      const res = resume ? await resumeConversation(c.env, conversationId, send) : await runTurn(c.env, conversationId, content, clientId, deviceId(c), "user", send, attachmentIds);
       await send("done", res);
     } catch (e) {
       await send("error", e instanceof HttpError ? { code: e.code, message: e.message } : { code: "internal", message: e instanceof Error ? e.message : String(e) });
@@ -182,7 +206,6 @@ router.on("PUT", "/v1/profile/:section", async (r, p, c) => {
   const content = str(b.content, "content", { optional: true, max: SECTION_MAX });
   const base = typeof b.base_updated_at === "number" ? b.base_updated_at : undefined;
   const saved = await setSection(c.env, p.section, content, deviceId(c), base);
-  if (p.section === "quiet_hours") await replanAll(c.env);
   return json(saved);
 });
 router.on("POST", "/v1/profile/suggestions/:id/accept", async (r, p, c) => {
@@ -227,7 +250,8 @@ router.on("PATCH", "/v1/responsibilities/:id", async (r, p, c) => {
     status: b.status as string | undefined,
     notes: b.notes as string | undefined,
     due_at: isoOrNull(b.due_at, "due_at"),
-    next_check_at: isoOrNull(b.next_check_at, "next_check_at"),
+    next_check_at: typeof b.paused === "boolean" ? (b.paused ? null : Date.now()) : isoOrNull(b.next_check_at, "next_check_at"),
+    data: typeof b.paused === "boolean" ? {paused:b.paused} : undefined,
   });
   return json({ ok: true });
 });
@@ -354,7 +378,9 @@ router.on("GET", "/v1/export.md", async (r, _p, c) => {
 router.on("POST", "/v1/heartbeat/run", async (r, _p, c) => {
   const b = await readJson<{ phase?: Phase }>(r).catch(() => ({}) as { phase?: Phase });
   const phase = PHASES.includes(b.phase as Phase) ? (b.phase as Phase) : "email";
-  return json(await heartbeat(c.env, phase));
+  const result = await heartbeat(c.env, phase);
+  c.exec.waitUntil(resumeConversations(c.env).catch((e) => console.error("proactive inbox", String(e))));
+  return json(result);
 });
 router.on("GET", "/v1/heartbeat/runs", async (_r, _p, c) => {
   const rows = await c.env.DB.prepare("SELECT * FROM heartbeat_runs ORDER BY started_at DESC LIMIT 30").all<Record<string, unknown>>();
