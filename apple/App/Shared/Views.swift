@@ -38,9 +38,17 @@ enum OrbitSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .chat: return "bubble.left"
-        case .activity: return "clock"
-        case .memory: return "brain"
+        case .activity: return "bolt"
+        case .memory: return "brain.head.profile"
         case .settings: return "gearshape"
+        }
+    }
+    var selectedIcon: String {
+        switch self {
+        case .chat: return "bubble.left.fill"
+        case .activity: return "bolt.fill"
+        case .memory: return "brain.head.profile.fill"
+        case .settings: return "gearshape.fill"
         }
     }
 }
@@ -214,44 +222,110 @@ struct OrbitHomeView: View {
     }
 
     private var drawer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Image(systemName: "circle.circle").font(.title2.weight(.light))
-                Text("Orbit").font(.title2.weight(.semibold))
-                Spacer()
-            }.padding(.horizontal, 12).padding(.bottom, 24)
-            ForEach(OrbitSection.allCases.filter { $0 != .settings }) { destination in
-                drawerRow(destination)
+        VStack(alignment: .leading, spacing: 0) {
+            drawerBrand
+                .padding(.horizontal, 8)
+                .padding(.bottom, OrbitTheme.isMac ? 18 : 26)
+            VStack(spacing: 2) {
+                ForEach(OrbitSection.allCases.filter { $0 != .settings }) { destination in
+                    drawerRow(destination)
+                }
             }
             Spacer(minLength: 20)
-            Divider().padding(.horizontal, 12)
+            drawerStatus.padding(.horizontal, 8).padding(.bottom, 12)
+            Rectangle().fill(OrbitTheme.hairline).frame(height: 0.5).padding(.horizontal, 8).padding(.bottom, 8)
             drawerRow(.settings)
-        }.padding(16)
+        }
+        .padding(.horizontal, OrbitTheme.isMac ? 10 : 14)
+        .padding(.vertical, OrbitTheme.isMac ? 12 : 16)
         #if os(macOS)
-        .padding(.top, 36)
+        .padding(.top, 34)
         #endif
     }
 
+    private var drawerBrand: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().stroke(.white.opacity(0.9), lineWidth: OrbitTheme.isMac ? 1.6 : 2)
+                    .frame(width: OrbitTheme.isMac ? 15 : 19, height: OrbitTheme.isMac ? 15 : 19)
+                Circle().fill(.white).frame(width: OrbitTheme.isMac ? 5 : 6, height: OrbitTheme.isMac ? 5 : 6)
+                    .offset(x: OrbitTheme.isMac ? 10 : 12.5, y: OrbitTheme.isMac ? -6 : -8)
+            }
+            .frame(width: OrbitTheme.isMac ? 34 : 42, height: OrbitTheme.isMac ? 34 : 42)
+            .background(
+                LinearGradient(colors: [Color(red: 0.32, green: 0.36, blue: 0.95), Color(red: 0.55, green: 0.3, blue: 0.85)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 9 : 12, style: .continuous)
+            )
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Orbit").font(.system(size: OrbitTheme.isMac ? 16 : 20, weight: .bold, design: .rounded))
+                Text(assistantStatus).font(OrbitTheme.rowSubtitle).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var assistantStatus: String {
+        guard let info = model.modelInfo else { return "Personal assistant" }
+        return info.chatgptAccounts.contains { $0.status == "active" } ? "Luna & Sol ready" : "Connect ChatGPT in Settings"
+    }
+
+    private var drawerStatus: some View {
+        let devices = store.devices.values.filter { $0.revokedAt == nil }.count
+        let failing = store.lastSyncError != nil
+        return HStack(spacing: 8) {
+            Circle().fill(failing ? Color.orange : Color.green).frame(width: 7, height: 7)
+            Text(failing ? "Sync issue" : store.lastSyncAt.map { "Synced \($0.formatted(.relative(presentation: .named)))" } ?? "Connecting…")
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Label("\(devices)", systemImage: "laptopcomputer.and.iphone").labelStyle(.titleAndIcon)
+                .accessibilityLabel("\(devices) devices")
+        }
+        .font(OrbitTheme.footnote).foregroundStyle(.secondary)
+    }
+
+    private func drawerBadge(_ destination: OrbitSection) -> (Int, Color)? {
+        switch destination {
+        case .chat:
+            let n = store.pendingApprovals.count
+            return n > 0 ? (n, .orange) : nil
+        case .activity:
+            let n = store.recentTasks.filter { $0.status == "queued" || $0.status == "leased" }.count
+            return n > 0 ? (n, Color.white.opacity(0.55)) : nil
+        default: return nil
+        }
+    }
+
     private func drawerRow(_ destination: OrbitSection) -> some View {
-        Button {
+        let selected = section == destination
+        return Button {
             section = destination
             setSidebar(false)
         } label: {
-            HStack(spacing: 14) {
-                Image(systemName: destination.icon).font(.system(size: 18)).frame(width: 24)
-                Text(destination.rawValue).font(.body.weight(section == destination ? .semibold : .regular))
+            HStack(spacing: 12) {
+                Image(systemName: selected ? destination.selectedIcon : destination.icon)
+                    .font(.system(size: OrbitTheme.isMac ? 14 : 17, weight: selected ? .semibold : .regular))
+                    .frame(width: OrbitTheme.isMac ? 20 : 26)
+                    .foregroundStyle(selected ? .primary : .secondary)
+                Text(destination.rawValue)
+                    .font(.system(size: OrbitTheme.isMac ? 13.5 : 17, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .primary : Color.white.opacity(0.78))
                 Spacer()
-                if destination == .chat, !store.pendingApprovals.isEmpty {
-                    Text("\(store.pendingApprovals.count)").font(.caption.weight(.semibold)).foregroundStyle(.orange)
-                        .accessibilityLabel("\(store.pendingApprovals.count) approvals in chat")
+                if let (count, tint) = drawerBadge(destination) {
+                    Text("\(count)").font(.system(size: OrbitTheme.isMac ? 10.5 : 12, weight: .bold)).monospacedDigit()
+                        .foregroundStyle(tint == .orange ? Color.black : Color.white)
+                        .padding(.horizontal, 7).frame(minWidth: 20, minHeight: 20)
+                        .background(tint == .orange ? Color.orange : Color.white.opacity(0.14), in: Capsule())
+                        .accessibilityLabel(destination == .chat ? "\(count) approvals waiting" : "\(count) tasks running")
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 16)
-            .contentShape(RoundedRectangle(cornerRadius: 18))
-            .background(section == destination ? Color.primary.opacity(0.07) : .clear,
-                        in: RoundedRectangle(cornerRadius: 18))
-        }.buttonStyle(.plain)
-        .accessibilityAddTraits(section == destination ? [.isSelected] : [])
+            .padding(.horizontal, 12)
+            .frame(minHeight: OrbitTheme.isMac ? 34 : 48)
+            .background(selected ? OrbitTheme.selection : .clear, in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 8 : 13, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 8 : 13, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     private var openGesture: some Gesture {
@@ -335,46 +409,61 @@ struct PairingView: View {
     @State private var name = DeviceName.current
     @State private var busy = false
 
+    @State private var firstDevice = false
+
     var body: some View {
         ZStack {
             OrbitBackdrop()
-            OrbitPage {
-                VStack(alignment: .leading, spacing: 12) {
-                    Image(systemName: "circle.circle").font(.system(size: 48, weight: .ultraLight))
-                        .frame(width: 90, height: 90).orbitGlass(in: Circle()).padding(.bottom, 16)
-                    Text("Meet Orbit.").font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                    Text("Your day, a little lighter.").foregroundStyle(.secondary)
-                }.padding(.vertical, 24)
-                OrbitCard {
-                    Text("Your server").font(.headline)
-                    TextField("https://orbit.workers.dev", text: $server).autocorrectionDisabled()
-                    Divider()
-                    TextField("Device name", text: $name)
+            OrbitScreen {
+                VStack(spacing: 14) {
+                    ZStack {
+                        Circle().stroke(.white.opacity(0.92), lineWidth: 3).frame(width: 34, height: 34)
+                        Circle().fill(.white).frame(width: 10, height: 10).offset(x: 21, y: -14)
+                    }
+                    .frame(width: 84, height: 84)
+                    .background(LinearGradient(colors: [Color(red: 0.32, green: 0.36, blue: 0.95), Color(red: 0.55, green: 0.3, blue: 0.85)],
+                                               startPoint: .topLeading, endPoint: .bottomTrailing),
+                                in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .shadow(color: Color(red: 0.45, green: 0.35, blue: 0.95).opacity(0.45), radius: 28, y: 10)
+                    Text("Meet Orbit").font(.system(size: OrbitTheme.isMac ? 28 : 34, weight: .bold, design: .rounded))
+                    Text("Your day, a little lighter.").font(OrbitTheme.isMac ? .system(size: 14) : .system(size: 17)).foregroundStyle(.secondary)
                 }
-                OrbitCard {
-                    Text("Pair this device").font(.headline)
-                    TextField("Pairing code", text: $code).autocorrectionDisabled()
-                    Text("Get a code from Orbit on your other device.").font(.caption).foregroundStyle(.secondary)
-                    DisclosureGroup("First device setup") {
-                        SecureField("Admin token", text: $admin).padding(.top, 8)
-                    }.font(.callout)
+                .frame(maxWidth: .infinity)
+                .padding(.top, OrbitTheme.isMac ? 40 : 48).padding(.bottom, 4)
+
+                OrbitGroup(header: "Server") {
+                    OrbitFieldRow(label: "Orbit URL", prompt: "https://orbit.workers.dev", text: $server)
+                    OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
+                    OrbitFieldRow(label: "Device name", prompt: "My iPhone", text: $name)
                 }
-                Button {
-                    busy = true
-                    Task { await model.pair(server: server, code: code, adminToken: admin, name: name); busy = false }
-                } label: {
-                    HStack {
-                        Spacer()
-                        if busy { ProgressView().controlSize(.small) }
-                        Text(busy ? "Connecting…" : "Connect").fontWeight(.semibold)
-                        Spacer()
-                    }.padding(.vertical, 8)
+                OrbitGroup(header: "Pair this device",
+                             footer: firstDevice ? "The admin token is used once to pair and is never stored." : "Open Orbit on a paired device → Settings → Devices → Pair a new device.") {
+                    if firstDevice {
+                        OrbitFieldRow(label: "Admin token", prompt: "Paste the admin token", text: $admin, secure: true)
+                    } else {
+                        OrbitFieldRow(label: "Pairing code", prompt: "10-character code", text: $code)
+                    }
                 }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(busy || server.isEmpty || (code.isEmpty && admin.isEmpty))
-            }.frame(maxWidth: 540)
+                VStack(spacing: 12) {
+                    Button {
+                        busy = true
+                        Task { await model.pair(server: server, code: firstDevice ? "" : code, adminToken: firstDevice ? admin : "", name: name); busy = false }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if busy { ProgressView().controlSize(.small).tint(.black) }
+                            Text(busy ? "Connecting…" : "Connect")
+                        }
+                    }
+                    .buttonStyle(.orbitPrimary)
+                    .disabled(busy || server.isEmpty || (firstDevice ? admin.isEmpty : code.isEmpty))
+                    Button(firstDevice ? "I have a pairing code" : "Setting up your first device?") {
+                        withAnimation(.easeOut(duration: 0.2)) { firstDevice.toggle() }
+                    }
+                    .buttonStyle(.plain).font(OrbitTheme.footnote.weight(.medium)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: 520)
         }
-        .textFieldStyle(.plain)
         .onAppear { server = model.serverURL }
     }
 }
@@ -445,8 +534,12 @@ struct ChatView: View {
                         withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) }
                     }
                 }
-                .onChange(of: store.pendingApprovals.map(\.id)) { _, ids in
-                    if let id = ids.first { withAnimation { proxy.scrollTo("approval-" + id, anchor: .bottom) } }
+                // Also fires when an approval's details load and the card grows, so it stays fully visible.
+                .onChange(of: store.pendingApprovals.map { "\($0.id):\($0.params == nil ? 0 : 1)" }) { _, keys in
+                    guard let id = store.pendingApprovals.first?.id, !keys.isEmpty else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                        withAnimation { proxy.scrollTo("approval-" + id, anchor: .bottom) }
+                    }
                 }
                 .onChange(of: model.streaming[conversationId]?.count ?? 0) { _, _ in
                     proxy.scrollTo("typing", anchor: .bottom)
@@ -662,31 +755,78 @@ struct MessageBubble: View {
 struct ChatApprovalCard: View {
     @EnvironmentObject var model: AppModel
     let approval: Approval
-    @State private var deciding = false
+    @State private var deciding: Bool?   // nil idle; true approving; false denying
+
+    /// "Changing an existing reminder: Mark reminder … complete" → reason + action.
+    private var parts: (reason: String, action: String) {
+        let s = approval.summary
+        if let r = s.range(of: ": ") { return (String(s[..<r.lowerBound]), String(s[r.upperBound...])) }
+        return ("Needs your approval", s)
+    }
 
     var body: some View {
-        OrbitSolidCard {
-            Label("Needs your approval", systemImage: "checkmark.shield")
-                .font(.caption.weight(.semibold)).foregroundStyle(.orange)
-            Text(approval.summary).font(.headline)
-            if case .object(let params)? = approval.params {
-                ForEach(Self.rows(params), id: \.label) { row in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(row.label).font(.caption).foregroundStyle(.secondary)
-                        Text(row.value).font(.callout).textSelection(.enabled)
-                    }
+        VStack(alignment: .leading, spacing: OrbitTheme.isMac ? 12 : 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: OrbitTheme.isMac ? 11 : 13, weight: .semibold)).foregroundStyle(.black)
+                    .frame(width: OrbitTheme.isMac ? 22 : 26, height: OrbitTheme.isMac ? 22 : 26)
+                    .background(Color.orange, in: Circle())
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Approval needed").font(.system(size: OrbitTheme.isMac ? 12 : 13.5, weight: .semibold)).foregroundStyle(.orange)
+                    Text(parts.reason.orbitTypographic).font(OrbitTheme.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
-                HStack(spacing: 12) {
-                    Button(deciding ? "Working…" : "Approve") { decide(true) }.buttonStyle(.borderedProminent)
-                    Button("Deny", role: .destructive) { decide(false) }.buttonStyle(.bordered)
-                    Spacer()
-                }.controlSize(.large).disabled(deciding)
-            } else {
-                ProgressView("Loading action details…").font(.caption)
-                Button("Retry") { Task { await model.loadApprovalDetails() } }.font(.caption)
+                Spacer(minLength: 8)
+                Text("Expires \(approval.expiresAt.date, style: .relative)")
+                    .font(.system(size: OrbitTheme.isMac ? 10.5 : 12)).foregroundStyle(.tertiary).lineLimit(1)
             }
-            Text("Expires \(approval.expiresAt.date, style: .relative)").font(.caption).foregroundStyle(.secondary)
+            Text(parts.action.orbitTypographic)
+                .font(.system(size: OrbitTheme.isMac ? 15 : 18, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            if case .object(let params)? = approval.params {
+                let rows = Self.rows(params)
+                if !rows.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                            if index > 0 { Rectangle().fill(OrbitTheme.hairline).frame(height: 0.5) }
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Text(row.label).font(OrbitTheme.rowSubtitle).foregroundStyle(.secondary)
+                                    .frame(width: OrbitTheme.isMac ? 96 : 104, alignment: .leading)
+                                Text(row.value).font(OrbitTheme.isMac ? .system(size: 12.5) : .system(size: 15))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.vertical, OrbitTheme.isMac ? 7 : 10)
+                        }
+                    }
+                    .padding(.horizontal, OrbitTheme.isMac ? 12 : 14)
+                    .background(OrbitTheme.raisedHigh.opacity(0.6), in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 9 : 14, style: .continuous))
+                }
+                HStack(spacing: 10) {
+                    Button { decide(false) } label: {
+                        if deciding == false { ProgressView().controlSize(.small) } else { Text("Deny") }
+                    }.buttonStyle(.orbitSecondary)
+                    Button { decide(true) } label: {
+                        if deciding == true { ProgressView().controlSize(.small).tint(.black) } else { Text("Approve") }
+                    }.buttonStyle(.orbitPrimary)
+                }
+                .disabled(deciding != nil)
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading details…").font(OrbitTheme.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Retry") { Task { await model.loadApprovalDetails() } }
+                        .buttonStyle(OrbitButtonStyle(kind: .secondary, fullWidth: false))
+                }
+            }
         }
+        .padding(OrbitTheme.isMac ? 16 : 18)
+        .background(OrbitTheme.raised, in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 16 : 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 16 : 24, style: .continuous)
+                .stroke(LinearGradient(colors: [Color.orange.opacity(0.55), Color.orange.opacity(0.12)], startPoint: .top, endPoint: .bottom), lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Approval needed: \(parts.action)")
     }
 
     /// The parameters a person needs to judge the action: internal ids are hidden, edits are listed
@@ -697,11 +837,14 @@ struct ChatApprovalCard: View {
             if let s = v.string, s.count >= 20, let d = ISO.parse(s) { return d.formatted(date: .abbreviated, time: .shortened) }
             return v.display
         }
+        // What, when, where — then everything else alphabetically.
+        let order = ["title", "subject", "to", "start", "end", "due", "all_day", "location", "calendar", "list", "notes", "body", "changes"]
+        func rank(_ k: String) -> Int { order.firstIndex(of: k) ?? order.count }
         var out: [(label: String, value: String)] = []
-        for key in params.keys.sorted() where key != "device_id" && !key.hasSuffix("_id") {
+        for key in params.keys.sorted(by: { (rank($0), $0) < (rank($1), $1) }) where key != "device_id" && !key.hasSuffix("_id") {
             guard let v = params[key] else { continue }
             if key == "changes", case .object(let changes) = v {
-                for ck in changes.keys.sorted() { if let cv = changes[ck] { out.append(("New " + label(ck).lowercased(), value(cv))) } }
+                for ck in changes.keys.sorted(by: { (rank($0), $0) < (rank($1), $1) }) { if let cv = changes[ck] { out.append(("New " + label(ck).lowercased(), value(cv))) } }
             } else {
                 out.append((key == "title" && params["changes"] != nil ? "Current title" : label(key), value(v)))
             }
@@ -710,15 +853,32 @@ struct ChatApprovalCard: View {
     }
 
     private func decide(_ approve: Bool) {
-        deciding = true
+        deciding = approve
         Task {
             await model.decide(approval.id, approve: approve)
-            deciding = false
+            deciding = nil
         }
     }
 }
 
 // MARK: - Activity
+
+/// Groups items into "Today", "Yesterday", then dated sections, newest first.
+func orbitDayGroups<T>(_ items: [T], date: (T) -> Date) -> [(title: String, items: [T])] {
+    let cal = Calendar.current
+    var order: [Date] = []
+    var buckets: [Date: [T]] = [:]
+    for item in items {
+        let day = cal.startOfDay(for: date(item))
+        if buckets[day] == nil { order.append(day) }
+        buckets[day, default: []].append(item)
+    }
+    return order.map { day in
+        let title = cal.isDateInToday(day) ? "Today" : cal.isDateInYesterday(day) ? "Yesterday"
+            : day.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+        return (title, buckets[day] ?? [])
+    }
+}
 
 struct WorkView: View {
     @EnvironmentObject var model: AppModel
@@ -726,6 +886,7 @@ struct WorkView: View {
     var onCompose: (String) -> Void
     var onReviewApproval: () -> Void
     @State private var tab = 0
+    @State private var expandedError: String?
 
     private var activeTasks: [OrbitTask] {
         store.recentTasks.filter { ["queued", "leased", "awaiting_approval"].contains($0.status) }
@@ -733,117 +894,209 @@ struct WorkView: View {
     private var finishedTasks: [OrbitTask] {
         store.recentTasks.filter { !["queued", "leased", "awaiting_approval"].contains($0.status) }
     }
+    private var doneToday: Int {
+        finishedTasks.filter { $0.status == "succeeded" && Calendar.current.isDateInToday($0.updatedAt.date) }.count
+    }
+    private var unread: Int { store.sortedNotifications.filter { $0.readAt == nil }.count }
 
     var body: some View {
-        OrbitPage {
-            OrbitPillTabs(titles: ["Active", "Done", "Updates", "History"], selection: $tab)
-            switch tab {
-            case 0: taskList(activeTasks, active: true)
-            case 1: taskList(finishedTasks, active: false)
-            case 2: notificationList
-            default: historyList
+        OrbitScreen(spacing: OrbitTheme.isMac ? 18 : 22) {
+            HStack(spacing: 10) {
+                OrbitStatTile(value: activeTasks.filter { $0.status != "awaiting_approval" }.count, label: "Running")
+                OrbitStatTile(value: activeTasks.filter { $0.status == "awaiting_approval" }.count, label: "Needs you", tint: .orange)
+                OrbitStatTile(value: doneToday, label: "Done today", tint: .green)
             }
+            OrbitSegmented(titles: ["Active", "Done", "Updates", "History"], selection: $tab, badges: [2: unread])
+            Group {
+                switch tab {
+                case 0: activeList
+                case 1: finishedList
+                case 2: notificationList
+                default: historyList
+                }
+            }
+            .padding(.top, 4)
+            .transaction { $0.animation = nil } // swap lists instantly; only the segment indicator slides
         }
         .refreshable { await model.tick() }
     }
 
-    @ViewBuilder private func taskList(_ tasks: [OrbitTask], active: Bool) -> some View {
-        if tasks.isEmpty {
-            if active {
-                Text("Try asking Orbit").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 16)
-                suggestion("Email check", detail: "Find what needs your attention.", icon: "envelope",
+    // Active
+
+    @ViewBuilder private var activeList: some View {
+        let waiting = activeTasks.filter { $0.status == "awaiting_approval" }
+        let running = activeTasks.filter { $0.status != "awaiting_approval" }
+        if activeTasks.isEmpty {
+            OrbitEmptyState(symbol: "bolt", title: "Nothing running", detail: "When Orbit works on something for you, it shows up here.")
+            OrbitGroup(header: "Try asking Orbit") {
+                suggestion("Check my email", detail: "Find what needs your attention", icon: "envelope.fill", tint: .blue,
                            prompt: "Check my connected email accounts and tell me what needs my attention.")
-                suggestion("Daily briefing", detail: "Your schedule, deadlines, and next steps.", icon: "sun.max",
+                OrbitRowDivider()
+                suggestion("Daily briefing", detail: "Schedule, deadlines and next steps", icon: "sun.max.fill", tint: .orange,
                            prompt: "Give me a briefing of my schedule, upcoming deadlines, and anything waiting on me.")
-            } else {
-                OrbitEmptyState(symbol: "checkmark.circle", title: "Nothing finished yet", detail: "Completed tasks will appear here.")
             }
         } else {
-            Text("\(tasks.count) \(active ? "in progress" : "finished")")
-                .font(.subheadline.weight(.medium)).foregroundStyle(.secondary).padding(.top, 8)
-        }
-        ForEach(tasks.prefix(100)) { task in
-            OrbitSolidCard {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: taskIcon(task.status)).font(.title3).foregroundStyle(taskColor(task.status))
-                        .frame(width: 28).padding(.top, 2)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(task.summary).font(.body.weight(.medium))
-                        HStack(spacing: 6) {
-                            Text(taskLabel(task.status))
-                            Text("·")
-                            Text(task.updatedAt.date, style: .relative)
-                        }.font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    if task.status == "queued" || task.status == "awaiting_approval" {
-                        Menu {
-                            Button("Cancel task", role: .destructive) { Task { await model.perform { try await $0.cancel(taskId: task.id) } } }
-                        } label: { Image(systemName: "ellipsis").frame(width: 36, height: 36) }
-                    }
-                }
-                if task.status == "awaiting_approval" {
-                    Button("Review in chat", action: onReviewApproval).buttonStyle(.bordered).controlSize(.large)
-                }
-                if let error = task.error, task.status == "failed" {
-                    DisclosureGroup("What happened") { Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                }
+            if !waiting.isEmpty {
+                OrbitGroup(header: "Needs you") { taskRows(waiting) }
+            }
+            if !running.isEmpty {
+                OrbitGroup(header: "In progress") { taskRows(running) }
             }
         }
     }
 
-    private func suggestion(_ title: String, detail: String, icon: String, prompt: String) -> some View {
-        Button { onCompose(prompt) } label: {
-            OrbitSolidCard {
-                HStack(spacing: 18) {
-                    Image(systemName: icon).font(.title2.weight(.light)).frame(width: 34)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(title).font(.body.weight(.medium))
-                        Text(detail).font(.subheadline).foregroundStyle(.secondary)
+    @ViewBuilder private var finishedList: some View {
+        if finishedTasks.isEmpty {
+            OrbitEmptyState(symbol: "checkmark", title: "Nothing finished yet", detail: "Completed tasks will appear here.")
+        } else {
+            ForEach(orbitDayGroups(Array(finishedTasks.prefix(100)), date: { $0.updatedAt.date }), id: \.title) { group in
+                OrbitGroup(header: group.title) { taskRows(group.items) }
+            }
+        }
+    }
+
+    @ViewBuilder private func taskRows(_ tasks: [OrbitTask]) -> some View {
+        ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
+            if index > 0 { OrbitRowDivider() }
+            taskRow(task)
+        }
+    }
+
+    private func taskRow(_ task: OrbitTask) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                OrbitIconTile(symbol: taskIcon(task.status), tint: taskColor(task.status))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(task.summary.orbitTypographic).font(OrbitTheme.rowTitle).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 4) {
+                        Text(taskLabel(task.status)).foregroundStyle(task.status == "failed" || task.status == "awaiting_approval" ? .orange : .secondary)
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(orbitTaskTime(task)).foregroundStyle(.secondary)
                     }
-                    Spacer(minLength: 0)
-                    Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.tertiary)
+                    .font(OrbitTheme.rowSubtitle)
+                }
+                Spacer(minLength: 8)
+                if task.status == "awaiting_approval" {
+                    Button("Review", action: onReviewApproval)
+                        .buttonStyle(OrbitButtonStyle(kind: .secondary, fullWidth: false))
+                        .controlSize(.small)
+                }
+                if task.status == "queued" || task.status == "awaiting_approval" {
+                    Menu {
+                        Button("Cancel task", role: .destructive) { Task { await model.perform { try await $0.cancel(taskId: task.id) } } }
+                    } label: {
+                        Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32).contentShape(Rectangle())
+                    }
+                    .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                    .accessibilityLabel("More for this task")
+                }
+                if task.status == "failed", task.error != nil {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { expandedError = expandedError == task.id ? nil : task.id }
+                    } label: {
+                        Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expandedError == task.id ? 180 : 0))
+                            .frame(width: 32, height: 32).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityLabel("What happened")
                 }
             }
-        }.buttonStyle(.plain)
+            if task.status == "failed", let error = task.error, expandedError == task.id {
+                Text(error).font(OrbitTheme.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(OrbitTheme.raisedHigh.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.top, 10).padding(.leading, OrbitTheme.tileSize + 12)
+            }
+        }
+        .padding(.horizontal, OrbitTheme.rowHorizontal)
+        .padding(.vertical, OrbitTheme.rowVertical)
+        .frame(minHeight: OrbitTheme.rowMinHeight)
     }
+
+    private func suggestion(_ title: String, detail: String, icon: String, tint: Color, prompt: String) -> some View {
+        Button { onCompose(prompt) } label: {
+            OrbitRow(symbol: icon, tint: tint, title: title, subtitle: detail, accessory: .external)
+        }.buttonStyle(OrbitRowButtonStyle())
+    }
+
+    // Updates & history
 
     @ViewBuilder private var notificationList: some View {
         if store.sortedNotifications.isEmpty {
-            OrbitEmptyState(symbol: "bell", title: "You’re up to date", detail: "Useful updates will appear here.")
-        }
-        ForEach(store.sortedNotifications.prefix(150)) { notification in
-            OrbitSolidCard {
-                HStack(alignment: .top) {
-                    Text(notification.title).font(.body.weight(.semibold))
-                    Spacer()
-                    if notification.readAt == nil { Circle().fill(Color.accentColor).frame(width: 7, height: 7).accessibilityLabel("Unread") }
+            OrbitEmptyState(symbol: "bell", title: "You’re up to date", detail: "Useful updates from Orbit will appear here.")
+        } else {
+            ForEach(orbitDayGroups(Array(store.sortedNotifications.prefix(150)), date: { $0.createdAt.date }), id: \.title) { group in
+                OrbitGroup(header: group.title) {
+                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, notification in
+                        if index > 0 { OrbitRowDivider() }
+                        notificationRow(notification)
+                    }
                 }
-                Text(notification.body).font(.subheadline).foregroundStyle(.secondary).textSelection(.enabled)
-                Text(notification.createdAt.date, style: .relative).font(.caption).foregroundStyle(.tertiary)
             }
-            .onAppear {
-                if notification.readAt == nil { Task { await model.perform { try await $0.markRead(notificationId: notification.id) } } }
+        }
+    }
+
+    private func notificationRow(_ notification: OrbitNotification) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            OrbitIconTile(symbol: notificationIcon(notification.category), tint: notificationTint(notification.category))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(notification.title).font(OrbitTheme.rowTitle)
+                    if notification.readAt == nil {
+                        Circle().fill(Color.accentColor).frame(width: 7, height: 7).accessibilityLabel("Unread")
+                    }
+                    Spacer(minLength: 6)
+                    Text(notification.createdAt.date.formatted(date: .omitted, time: .shortened))
+                        .font(OrbitTheme.footnote).foregroundStyle(.tertiary)
+                }
+                Text(notification.body.orbitTypographic).font(OrbitTheme.rowSubtitle).foregroundStyle(.secondary)
+                    .lineLimit(6).textSelection(.enabled)
             }
+        }
+        .padding(.horizontal, OrbitTheme.rowHorizontal)
+        .padding(.vertical, OrbitTheme.rowVertical)
+        .onAppear {
+            if notification.readAt == nil { Task { await model.perform { try await $0.markRead(notificationId: notification.id) } } }
         }
     }
 
     @ViewBuilder private var historyList: some View {
         if store.sortedActivity.isEmpty {
-            OrbitEmptyState(symbol: "clock", title: "A fresh start", detail: "Orbit’s actions will appear here.")
-        }
-        ForEach(store.sortedActivity.prefix(200)) { activity in
-            OrbitSolidCard {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "clock").foregroundStyle(.secondary).padding(.top, 2)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(activity.summary).font(.subheadline)
-                        Text(activity.createdAt.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+            OrbitEmptyState(symbol: "clock", title: "A fresh start", detail: "Everything Orbit does is logged here.")
+        } else {
+            ForEach(orbitDayGroups(Array(store.sortedActivity.prefix(200)), date: { $0.createdAt.date }), id: \.title) { group in
+                OrbitGroup(header: group.title) {
+                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, activity in
+                        if index > 0 { OrbitRowDivider(inset: OrbitTheme.rowHorizontal + 22) }
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Image(systemName: historyIcon(activity.type))
+                                .font(.system(size: OrbitTheme.isMac ? 11 : 13, weight: .semibold))
+                                .foregroundStyle(historyTint(activity.type)).frame(width: 12)
+                            Text(activity.summary.orbitTypographic).font(OrbitTheme.isMac ? .system(size: 12.5) : .system(size: 15))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 8)
+                            Text(activity.createdAt.date.formatted(date: .omitted, time: .shortened))
+                                .font(OrbitTheme.footnote).foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, OrbitTheme.rowHorizontal)
+                        .padding(.vertical, OrbitTheme.isMac ? 8 : 11)
                     }
                 }
             }
         }
     }
+
+    /// Running work shows how long ago it moved; finished work (already grouped by day) shows the time.
+    private func orbitTaskTime(_ task: OrbitTask) -> String {
+        let date = task.updatedAt.date
+        if ["queued", "leased", "awaiting_approval"].contains(task.status) {
+            return Date().timeIntervalSince(date) < 60 ? "just now" : date.formatted(.relative(presentation: .named))
+        }
+        return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    // Visual vocabulary
 
     private func taskLabel(_ status: String) -> String {
         switch status {
@@ -853,41 +1106,61 @@ struct WorkView: View {
         case "succeeded": return "Completed"
         case "failed": return "Needs attention"
         case "denied": return "Declined"
+        case "cancelled": return "Cancelled"
         default: return status.capitalized
         }
     }
     private func taskIcon(_ status: String) -> String {
         switch status {
-        case "succeeded": return "checkmark.circle"
-        case "failed": return "exclamationmark.circle"
-        case "awaiting_approval": return "hand.raised"
+        case "succeeded": return "checkmark"
+        case "failed": return "exclamationmark"
+        case "awaiting_approval": return "hand.raised.fill"
         case "leased": return "arrow.triangle.2.circlepath"
-        case "cancelled", "denied": return "minus.circle"
-        default: return "clock"
+        case "cancelled", "denied": return "minus"
+        default: return "clock.fill"
         }
     }
     private func taskColor(_ status: String) -> Color {
         switch status {
-        case "succeeded": return .green
-        case "failed", "awaiting_approval": return .orange
-        default: return .secondary
-        }
-    }
-}
-
-struct StatusDot: View {
-    let status: String
-    var color: Color {
-        switch status {
-        case "succeeded": return .green
-        case "failed", "denied": return .red
+        case "succeeded": return Color(red: 0.2, green: 0.72, blue: 0.42)
+        case "failed": return Color(red: 0.95, green: 0.38, blue: 0.3)
         case "awaiting_approval": return .orange
-        case "leased": return .blue
-        case "cancelled": return .gray
-        default: return .yellow
+        case "leased": return Color(red: 0.3, green: 0.5, blue: 0.98)
+        default: return Color(white: 0.35)
         }
     }
-    var body: some View { Circle().fill(color).frame(width: 8, height: 8) }
+    private func notificationIcon(_ category: String) -> String {
+        switch category {
+        case "approval": return "hand.raised.fill"
+        case "task_done": return "checkmark"
+        case "task_failed": return "exclamationmark"
+        case "briefing": return "sun.max.fill"
+        case "responsibility", "reminder": return "bookmark.fill"
+        default: return "bell.fill"
+        }
+    }
+    private func notificationTint(_ category: String) -> Color {
+        switch category {
+        case "approval": return .orange
+        case "task_done": return Color(red: 0.2, green: 0.72, blue: 0.42)
+        case "task_failed": return Color(red: 0.95, green: 0.38, blue: 0.3)
+        case "briefing": return Color(red: 0.98, green: 0.62, blue: 0.2)
+        case "responsibility", "reminder": return Color(red: 0.55, green: 0.4, blue: 0.95)
+        default: return Color(white: 0.35)
+        }
+    }
+    private func historyIcon(_ type: String) -> String {
+        if type.contains("failed") || type.contains("denied") { return "xmark" }
+        if type.contains("approv") { return "hand.raised.fill" }
+        if type.contains("succeeded") { return "checkmark" }
+        return "circle.fill"
+    }
+    private func historyTint(_ type: String) -> Color {
+        if type.contains("failed") || type.contains("denied") { return Color(red: 0.95, green: 0.38, blue: 0.3) }
+        if type.contains("approv") { return .orange }
+        if type.contains("succeeded") { return .green }
+        return Color(white: 0.4)
+    }
 }
 
 // MARK: - Memory & responsibilities
@@ -899,57 +1172,46 @@ struct MemoryView: View {
     @State private var tab = 0
     @State private var query = ""
     @State private var newText = ""
-    @State private var newKind = "preference"
+    @State private var newKind = 0      // 0 preference, 1 fact
     @State private var showAdd = false
     @State private var editing: Memory?
     @State private var editText = ""
+    @FocusState private var searchFocused: Bool
 
-    private var filteredMemories: [Memory] {
-        store.liveMemories.filter {
-            $0.kind == (tab == 0 ? "preference" : "fact") && (query.isEmpty || $0.content.localizedCaseInsensitiveContains(query))
-        }
+    private func memories(_ kind: String) -> [Memory] {
+        store.liveMemories.filter { $0.kind == kind && (query.isEmpty || $0.content.localizedCaseInsensitiveContains(query)) }
     }
+    private var filteredMemories: [Memory] { memories(tab == 0 ? "preference" : "fact") }
     private var tracked: [Responsibility] {
         store.openResponsibilities.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.notes.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {
-        OrbitPage {
-            OrbitPillTabs(titles: ["Preferences", "About you", "Tracking"], selection: $tab)
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search memory", text: $query).textFieldStyle(.plain)
-                if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                        .buttonStyle(.plain).accessibilityLabel("Clear search")
-                }
-            }.padding(14).orbitGlass(in: RoundedRectangle(cornerRadius: 18))
-            if tab == 2 { trackingList } else { memoryList }
+        OrbitScreen(spacing: OrbitTheme.isMac ? 16 : 20) {
+            OrbitSegmented(titles: ["Preferences", "About you", "Tracking"], selection: $tab)
+            searchField
+            Group {
+                if tab == 2 { trackingList } else { memoryList }
+            }
+            .padding(.top, 4)
+            .transaction { $0.animation = nil }
+            Color.clear.frame(height: 60) // room above the floating button
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Spacer()
-                Button {
-                    if tab == 2 { onTrack() }
-                    else { newKind = tab == 0 ? "preference" : "fact"; showAdd = true }
-                } label: {
-                    Label(tab == 2 ? "Track something" : "Add memory", systemImage: "plus")
-                        .fontWeight(.semibold).padding(.horizontal, 10).padding(.vertical, 5)
-                }
-                .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).controlSize(.large)
-            }.frame(maxWidth: 680).padding(.horizontal, 20).padding(.vertical, 12)
+        .overlay(alignment: .bottom) {
+            // Aligned to the content column, not the window corner, on wide windows.
+            HStack { Spacer(); addButton }
+                .frame(maxWidth: OrbitTheme.pageWidth)
+                .padding(.horizontal, OrbitTheme.pagePadding)
         }
         .sheet(isPresented: $showAdd) {
-            editor(title: "Add memory", text: $newText) {
-                Picker("Kind", selection: $newKind) { Text("Preference").tag("preference"); Text("Fact").tag("fact") }.pickerStyle(.segmented)
-            } save: {
-                let content = newText, kind = newKind
+            MemoryEditor(title: "New memory", text: $newText, kind: $newKind, showsKind: true) {
+                let content = newText, kind = newKind == 0 ? "preference" : "fact"
                 newText = ""; showAdd = false
                 Task { await model.perform { try await $0.addMemory(kind: kind, content: content) } }
             } cancel: { showAdd = false }
         }
         .sheet(item: $editing) { memory in
-            editor(title: "Edit memory", text: $editText) { EmptyView() } save: {
+            MemoryEditor(title: "Edit memory", text: $editText, kind: .constant(0), showsKind: false) {
                 let content = editText
                 editing = nil
                 Task { await model.perform { try await $0.updateMemory(id: memory.id, content: content) } }
@@ -958,79 +1220,186 @@ struct MemoryView: View {
         .refreshable { await model.tick() }
     }
 
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").font(.system(size: OrbitTheme.isMac ? 12 : 15, weight: .medium)).foregroundStyle(.secondary)
+            TextField(tab == 2 ? "Search tracked items" : "Search memory", text: $query)
+                .textFieldStyle(.plain).font(OrbitTheme.body).focused($searchFocused)
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
+                    .buttonStyle(.plain).accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: OrbitTheme.isMac ? 32 : 42)
+        .background(OrbitTheme.raised, in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 9 : 13, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 9 : 13, style: .continuous)
+            .stroke(searchFocused ? Color.white.opacity(0.22) : OrbitTheme.hairline, lineWidth: searchFocused ? 1 : 0.5))
+    }
+
+    private var addButton: some View {
+        Button {
+            if tab == 2 { onTrack() } else { newKind = tab == 0 ? 0 : 1; showAdd = true }
+        } label: {
+            Label(tab == 2 ? "Track something" : "Add memory", systemImage: "plus")
+                .font(.system(size: OrbitTheme.isMac ? 13 : 15, weight: .semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, OrbitTheme.isMac ? 14 : 18)
+                .frame(height: OrbitTheme.isMac ? 34 : 48)
+                .background(.white, in: Capsule())
+                .shadow(color: .black.opacity(0.5), radius: 16, y: 6)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, OrbitTheme.isMac ? 18 : 12)
+    }
+
     @ViewBuilder private var memoryList: some View {
         if filteredMemories.isEmpty {
-            OrbitEmptyState(symbol: query.isEmpty ? "brain" : "magnifyingglass", title: query.isEmpty ? "A little more you" : "No matches",
-                            detail: query.isEmpty ? "Tell Orbit what’s worth remembering." : "Try a different search.")
+            OrbitEmptyState(symbol: query.isEmpty ? (tab == 0 ? "slider.horizontal.3" : "person") : "magnifyingglass",
+                            title: query.isEmpty ? (tab == 0 ? "No preferences yet" : "Nothing saved about you") : "No matches",
+                            detail: query.isEmpty ? (tab == 0 ? "Tell Orbit how you like things done, and it will remember." : "Facts you share, like your school or routines, live here.") : "Try a different search.")
         } else {
-            Text("\(filteredMemories.count) saved").font(.subheadline.weight(.medium)).foregroundStyle(.secondary).padding(.top, 8)
-        }
-        ForEach(filteredMemories) { memory in
-            OrbitSolidCard {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: tab == 0 ? "slider.horizontal.3" : "person.crop.circle")
-                        .font(.title3).foregroundStyle(.secondary).frame(width: 26).padding(.top, 2)
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(memory.content).font(.body).textSelection(.enabled)
-                        Text(memory.updatedAt.date.formatted(date: .abbreviated, time: .omitted))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    Menu {
-                        Button("Edit") { editing = memory; editText = memory.content }
-                        Button("Delete", role: .destructive) { Task { await model.perform { try await $0.deleteMemory(id: memory.id) } } }
-                    } label: { Image(systemName: "ellipsis").frame(width: 36, height: 36) }
+            OrbitGroup(header: "\(filteredMemories.count) saved") {
+                ForEach(Array(filteredMemories.enumerated()), id: \.element.id) { index, memory in
+                    if index > 0 { OrbitRowDivider(inset: OrbitTheme.rowHorizontal) }
+                    memoryRow(memory)
                 }
             }
         }
+    }
+
+    private func memoryRow(_ memory: Memory) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(memory.content).font(OrbitTheme.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Text("Updated \(memory.updatedAt.date.formatted(date: .abbreviated, time: .omitted))")
+                    .font(OrbitTheme.footnote).foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 8)
+            Menu {
+                memoryActions(memory)
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30).contentShape(Rectangle())
+            }
+            .menuStyle(.button).buttonStyle(.plain).fixedSize()
+            .accessibilityLabel("Memory options")
+        }
+        .padding(.horizontal, OrbitTheme.rowHorizontal)
+        .padding(.vertical, OrbitTheme.rowVertical)
+        .contentShape(Rectangle())
+        .contextMenu { memoryActions(memory) }
+    }
+
+    @ViewBuilder private func memoryActions(_ memory: Memory) -> some View {
+        Button { editing = memory; editText = memory.content } label: { Label("Edit", systemImage: "pencil") }
+        Button(role: .destructive) { Task { await model.perform { try await $0.deleteMemory(id: memory.id) } } } label: { Label("Delete", systemImage: "trash") }
     }
 
     @ViewBuilder private var trackingList: some View {
         if tracked.isEmpty {
             OrbitEmptyState(symbol: query.isEmpty ? "bookmark" : "magnifyingglass", title: query.isEmpty ? "Keep it on your radar" : "No matches",
-                            detail: query.isEmpty ? "Follow-ups, deadlines, and things you’re waiting on." : "Try a different search.")
-        }
-        ForEach(tracked) { responsibility in
-            OrbitSolidCard {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "bookmark").font(.title3).foregroundStyle(.secondary).frame(width: 26).padding(.top, 2)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(responsibility.title).font(.body.weight(.medium))
-                        if let due = responsibility.dueAt {
-                            Label(due.date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let next = responsibility.nextCheckAt {
-                            Text("Checking \(next.date, style: .relative)").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    Menu {
-                        Button("Mark done") { Task { await model.perform { try await $0.setResponsibilityStatus(id: responsibility.id, status: "done") } } }
-                        Button("Stop tracking", role: .destructive) { Task { await model.perform { try await $0.setResponsibilityStatus(id: responsibility.id, status: "cancelled") } } }
-                    } label: { Image(systemName: "ellipsis").frame(width: 36, height: 36) }
+                            detail: query.isEmpty ? "Follow-ups, deadlines, deliveries and things you’re waiting on." : "Try a different search.")
+        } else {
+            OrbitGroup(header: "\(tracked.count) tracked") {
+                ForEach(Array(tracked.enumerated()), id: \.element.id) { index, responsibility in
+                    if index > 0 { OrbitRowDivider() }
+                    trackingRow(responsibility)
                 }
             }
         }
     }
 
-    private func editor<Extra: View>(title: String, text: Binding<String>, @ViewBuilder extra: () -> Extra, save: @escaping () -> Void, cancel: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 24) {
-            Text(title).font(.title2.weight(.semibold))
-            extra()
-            TextField("Something to remember", text: text, axis: .vertical)
-                .lineLimit(3...8).textFieldStyle(.plain).padding(16)
-                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 18))
-            HStack {
-                Button("Cancel", action: cancel).buttonStyle(.bordered)
-                Spacer()
-                Button("Save", action: save).buttonStyle(.borderedProminent)
-                    .disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }.controlSize(.large)
+    private func trackingRow(_ responsibility: Responsibility) -> some View {
+        let overdue = (responsibility.dueAt?.date).map { $0 < Date() } ?? false
+        return HStack(alignment: .center, spacing: 12) {
+            OrbitIconTile(symbol: trackingIcon(responsibility.kind), tint: overdue ? Color(red: 0.95, green: 0.38, blue: 0.3) : Color(red: 0.55, green: 0.4, blue: 0.95))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(responsibility.title).font(OrbitTheme.rowTitle).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    if let due = responsibility.dueAt {
+                        OrbitBadge(text: (overdue ? "Overdue · " : "Due ") + due.date.formatted(.dateTime.month(.abbreviated).day().hour().minute()),
+                                   tint: overdue ? .orange : .secondary)
+                    }
+                    if let next = responsibility.nextCheckAt {
+                        Text("Checks \(next.date, style: .relative)").font(OrbitTheme.footnote).foregroundStyle(.tertiary).lineLimit(1)
+                    }
+                }
+            }
+            Spacer(minLength: 8)
+            Menu { trackingActions(responsibility) } label: {
+                Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30).contentShape(Rectangle())
+            }
+            .menuStyle(.button).buttonStyle(.plain).fixedSize()
+            .accessibilityLabel("Tracking options")
         }
-        .padding(28).frame(minWidth: 300, idealWidth: 420)
-        .background { OrbitBackdrop() }
-        .presentationDetents([.medium])
+        .padding(.horizontal, OrbitTheme.rowHorizontal)
+        .padding(.vertical, OrbitTheme.rowVertical)
+        .contentShape(Rectangle())
+        .contextMenu { trackingActions(responsibility) }
+    }
+
+    @ViewBuilder private func trackingActions(_ responsibility: Responsibility) -> some View {
+        Button { Task { await model.perform { try await $0.setResponsibilityStatus(id: responsibility.id, status: "done") } } } label: { Label("Mark done", systemImage: "checkmark") }
+        Button(role: .destructive) { Task { await model.perform { try await $0.setResponsibilityStatus(id: responsibility.id, status: "cancelled") } } } label: { Label("Stop tracking", systemImage: "xmark") }
+    }
+
+    private func trackingIcon(_ kind: String) -> String {
+        switch kind {
+        case "delivery": return "shippingbox.fill"
+        case "return", "refund": return "arrow.uturn.backward"
+        case "renewal", "subscription": return "arrow.clockwise"
+        case "deadline": return "calendar"
+        case "reply", "follow_up": return "arrowshape.turn.up.left.fill"
+        default: return "bookmark.fill"
+        }
+    }
+}
+
+/// Sheet for adding or editing a memory.
+struct MemoryEditor: View {
+    let title: String
+    @Binding var text: String
+    @Binding var kind: Int
+    var showsKind: Bool
+    var save: () -> Void
+    var cancel: () -> Void
+    @FocusState private var focused: Bool
+
+    private var empty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OrbitTheme.isMac ? 16 : 20) {
+            HStack {
+                Button("Cancel", action: cancel).buttonStyle(.plain).foregroundStyle(.secondary)
+                Spacer()
+                Text(title).font(.system(size: OrbitTheme.isMac ? 14 : 17, weight: .semibold))
+                Spacer()
+                Button("Save", action: save).buttonStyle(.plain).fontWeight(.semibold)
+                    .foregroundStyle(empty ? Color.secondary : Color.white).disabled(empty)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .font(OrbitTheme.body)
+            if showsKind {
+                OrbitSegmented(titles: ["Preference", "About you"], selection: $kind)
+            }
+            TextField(kind == 0 || !showsKind ? "e.g. Keep replies short and casual" : "e.g. I study CS at CMU", text: $text, axis: .vertical)
+                .lineLimit(4...10).textFieldStyle(.plain).font(OrbitTheme.body).focused($focused)
+                .padding(14)
+                .background(OrbitTheme.raised, in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 10 : 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 10 : 16, style: .continuous).stroke(OrbitTheme.hairline, lineWidth: 0.5))
+            Text("Orbit uses memories to personalize replies. You can edit or delete them any time.")
+                .font(OrbitTheme.footnote).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(OrbitTheme.isMac ? 20 : 22)
+        .frame(minWidth: 320, idealWidth: 440, minHeight: OrbitTheme.isMac ? 280 : nil)
+        .background(Color(white: 0.06).ignoresSafeArea())
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+        .onAppear { focused = true }
     }
 }

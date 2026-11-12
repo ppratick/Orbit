@@ -1,6 +1,9 @@
 import OrbitKit
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(iOS)
+import UIKit
+#endif
 
 enum SettingsDestination: String, Hashable {
     case assistant = "Assistant", connections = "Connected apps", devices = "Devices", data = "Data & privacy"
@@ -10,7 +13,13 @@ enum SettingsDestination: String, Hashable {
 @MainActor final class OrbitSettingsNavigation: ObservableObject {
     @Published var path: [SettingsDestination] = []
     var title: String { path.last?.rawValue ?? "Settings" }
-    func back() { if !path.isEmpty { path.removeLast() } }
+    func push(_ destination: SettingsDestination) {
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) { path.append(destination) }
+    }
+    func back() {
+        guard !path.isEmpty else { return }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) { _ = path.removeLast() }
+    }
 }
 
 struct SettingsView: View {
@@ -20,6 +29,7 @@ struct SettingsView: View {
     @ObservedObject var navigation = OrbitSettingsNavigation()
     var showsHeader = true
     @State private var pairing: APIClient.PairingCode?
+    @State private var creatingCode = false
     @State private var icloudUser = ""
     @State private var icloudPassword = ""
     @State private var token = ""
@@ -28,6 +38,10 @@ struct SettingsView: View {
     @State private var signingIn = false
     @State private var signIn: ChatGPTSignIn?
     @State private var confirmUnpair = false
+    @State private var syncing = false
+    @State private var verifying = false
+    @State private var expandedErrors: Set<String> = []
+    @State private var copied = false
 
     private var connectedAccounts: [Account] {
         store.accounts.values.filter { $0.provider != "chatgpt" && $0.status != "disabled" }
@@ -36,12 +50,17 @@ struct SettingsView: View {
     private var chatGPTAccount: Account? {
         model.modelInfo?.chatgptAccounts.first { $0.status != "disabled" }
     }
+    private var chatGPTConnected: Bool { chatGPTAccount?.status == "active" }
+    private var devices: [DeviceInfo] {
+        store.devices.values.filter { $0.revokedAt == nil }.sorted { ($0.lastSeenAt?.date ?? .distantPast) > ($1.lastSeenAt?.date ?? .distantPast) }
+    }
+    private var serverHost: String { URL(string: model.serverURL)?.host ?? model.serverURL }
 
     var body: some View {
         VStack(spacing: 0) {
             if showsHeader {
                 Text(navigation.title)
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
                     .lineLimit(1).minimumScaleFactor(0.7)
                     .frame(maxWidth: .infinity, minHeight: 46)
                     .padding(.horizontal, 58)
@@ -49,12 +68,21 @@ struct SettingsView: View {
                         if !navigation.path.isEmpty {
                             OrbitCircleButton(symbol: "chevron.left", label: "Back") { navigation.back() }
                         }
-                    }.padding(20)
+                    }.padding(16)
             }
-            if let destination = navigation.path.last {
-                OrbitPage { destinationContent(destination) }
-                    .id(destination)
-            } else { settingsOverview }
+            ZStack {
+                if let destination = navigation.path.last {
+                    OrbitScreen { destinationContent(destination) }
+                        .id(destination)
+                        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
+                                                removal: .move(edge: .trailing).combined(with: .opacity)))
+                } else {
+                    settingsOverview
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
         }
         .background { OrbitBackdrop() }
         .fileExporter(isPresented: Binding(get: { exportDoc != nil }, set: { if !$0 { exportDoc = nil } }),
@@ -62,57 +90,70 @@ struct SettingsView: View {
                       defaultFilename: "orbit-export-\(Date().formatted(.iso8601.year().month().day())).md") { _ in exportDoc = nil }
         .confirmationDialog("Unpair this device?", isPresented: $confirmUnpair, titleVisibility: .visible) {
             Button("Unpair", role: .destructive) { model.unpair() }
+        } message: {
+            Text("This device stops syncing and forgets its access. Your conversation and memory stay on your server.")
         }
         .task { await model.refreshModelInfo() }
     }
 
+    // MARK: Overview
+
     private var settingsOverview: some View {
-            OrbitPage {
-                OrbitCard {
-                    HStack(spacing: 16) {
-                        Image(systemName: "circle.circle").font(.system(size: 34, weight: .light))
-                            .frame(width: 58, height: 58)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Your Orbit").font(.title3.weight(.semibold))
-                            Text(chatGPTAccount?.status == "active" ? "Connected to ChatGPT" : "Personal assistant")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-                OrbitCard {
-                    destinationRow(.assistant, icon: "sparkle", subtitle: "Luna & Sol")
-                    Divider()
-                    destinationRow(.connections, icon: "square.stack.3d.up", subtitle: "\(connectedAccounts.count) connected")
-                    Divider()
-                    destinationRow(.devices, icon: "laptopcomputer.and.iphone", subtitle: "Mac & iPhone")
-                }
-                OrbitCard {
-                    destinationRow(.data, icon: "lock", subtitle: "Sync, export & server")
-                    #if os(macOS)
-                    Divider()
-                    destinationRow(.mac, icon: "folder", subtitle: "Files & scripts")
-                    #endif
+        OrbitScreen {
+            profileCard
+            OrbitGroup {
+                link(.assistant, symbol: "sparkle", tint: OrbitProvider.tint("chatgpt"),
+                     subtitle: chatGPTConnected ? "ChatGPT connected · Luna & Sol" : "Connect ChatGPT to start")
+            }
+            OrbitGroup(header: "Connections") {
+                link(.connections, symbol: "square.stack.3d.up.fill", tint: Color(red: 0.3, green: 0.5, blue: 0.98),
+                     subtitle: connectedAccounts.isEmpty ? "Mail, Drive, Canvas, GitHub" : "\(connectedAccounts.count) connected")
+                OrbitRowDivider()
+                link(.devices, symbol: "laptopcomputer.and.iphone", tint: Color(red: 0.45, green: 0.45, blue: 0.5),
+                     subtitle: "\(devices.count) paired")
+            }
+            OrbitGroup(header: "General",
+                         footer: serverHost.isEmpty ? nil : "Connected to \(serverHost)") {
+                link(.data, symbol: "lock.fill", tint: Color(red: 0.2, green: 0.62, blue: 0.5), subtitle: "Sync, export and this device")
+                #if os(macOS)
+                OrbitRowDivider()
+                link(.mac, symbol: "folder.fill", tint: Color(red: 0.25, green: 0.6, blue: 0.95), subtitle: "Files and scripts")
+                #endif
+            }
+        }
+    }
+
+    private var profileCard: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().stroke(.white.opacity(0.92), lineWidth: 2.2).frame(width: 24, height: 24)
+                Circle().fill(.white).frame(width: 7, height: 7).offset(x: 15, y: -10)
+            }
+            .frame(width: OrbitTheme.isMac ? 48 : 58, height: OrbitTheme.isMac ? 48 : 58)
+            .background(LinearGradient(colors: [Color(red: 0.32, green: 0.36, blue: 0.95), Color(red: 0.55, green: 0.3, blue: 0.85)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                        in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 12 : 16, style: .continuous))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Your Orbit").font(.system(size: OrbitTheme.isMac ? 16 : 19, weight: .semibold))
+                if let label = chatGPTAccount?.label, chatGPTConnected {
+                    Text(label).font(OrbitTheme.rowSubtitle).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    Text("Personal assistant").font(OrbitTheme.rowSubtitle).foregroundStyle(.secondary)
                 }
             }
+            Spacer(minLength: 8)
+            OrbitBadge(text: chatGPTConnected ? "Ready" : "Setup needed", tint: chatGPTConnected ? .green : .orange)
+        }
+        .padding(OrbitTheme.isMac ? 14 : 16)
+        .background(OrbitTheme.raised, in: RoundedRectangle(cornerRadius: OrbitTheme.sectionRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: OrbitTheme.sectionRadius, style: .continuous).stroke(OrbitTheme.hairline, lineWidth: 0.5))
+        .accessibilityElement(children: .combine)
     }
 
-    private func destinationRow(_ destination: SettingsDestination, icon: String, subtitle: String) -> some View {
-        Button { navigation.path.append(destination) } label: {
-            destinationLabel(destination, icon: icon, subtitle: subtitle)
-        }.buttonStyle(.plain)
-    }
-
-    private func destinationLabel(_ destination: SettingsDestination, icon: String, subtitle: String) -> some View {
-            HStack(spacing: 14) {
-                Image(systemName: icon).font(.system(size: 19)).frame(width: 30)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(destination.rawValue).font(.body.weight(.medium))
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-            }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+    private func link(_ destination: SettingsDestination, symbol: String, tint: Color, subtitle: String) -> some View {
+        Button { navigation.push(destination) } label: {
+            OrbitRow(symbol: symbol, tint: tint, title: destination.rawValue, subtitle: subtitle, accessory: .chevron)
+        }.buttonStyle(OrbitRowButtonStyle())
     }
 
     @ViewBuilder private func destinationContent(_ destination: SettingsDestination) -> some View {
@@ -126,19 +167,34 @@ struct SettingsView: View {
         case .mac:
             #if os(macOS)
             macSettings
+            #else
+            EmptyView()
             #endif
         }
     }
 
-    private var assistantSettings: some View {
-        Group {
-            OrbitCard {
-                Label("ChatGPT", systemImage: "person.crop.circle").font(.headline)
-                Text(chatGPTAccount?.status == "active" ? chatGPTAccount?.label ?? "Connected" : "Not connected")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                Button(signingIn ? "Connecting…" : "Continue with ChatGPT", action: connectChatGPT)
-                    .buttonStyle(.borderedProminent).controlSize(.large).disabled(signingIn)
-                if let error = chatGPTAccount?.lastError { errorDetails(error) }
+    // MARK: Assistant
+
+    @ViewBuilder private var assistantSettings: some View {
+        OrbitHero(symbol: "sparkle", tint: OrbitProvider.tint("chatgpt"), title: "Assistant",
+                  detail: "Orbit thinks with your ChatGPT plan. Luna handles everyday requests; Sol takes on harder, multi-step work.")
+        OrbitGroup(header: "ChatGPT account",
+                     footer: "Uses your ChatGPT allowance. No API key or extra billing.") {
+            OrbitRow(symbol: "person.crop.circle.fill", tint: OrbitProvider.tint("chatgpt"),
+                     title: chatGPTConnected ? (chatGPTAccount?.label ?? "Connected") : "Not connected",
+                     subtitle: chatGPTConnected ? "Signed in" : "Sign in to let Orbit reply") {
+                OrbitBadge(text: chatGPTConnected ? "Active" : "Off", tint: chatGPTConnected ? .green : .secondary)
+            }
+            if let error = chatGPTAccount?.lastError { errorRow(id: "chatgpt", error) }
+            OrbitRowDivider(inset: 0)
+            VStack(spacing: 8) {
+                Button(action: connectChatGPT) {
+                    HStack(spacing: 8) {
+                        if signingIn { ProgressView().controlSize(.small).tint(.black) }
+                        Text(signingIn ? "Waiting for ChatGPT…" : chatGPTConnected ? "Reconnect ChatGPT" : "Continue with ChatGPT")
+                    }
+                }
+                .buttonStyle(.orbitPrimary).disabled(signingIn)
                 if chatGPTAccount != nil {
                     Button("Sign out", role: .destructive) {
                         Task {
@@ -148,190 +204,335 @@ struct SettingsView: View {
                             }
                             await model.refreshModelInfo()
                         }
-                    }.font(.callout)
+                    }
+                    .buttonStyle(.orbitDestructive)
                 }
             }
-            OrbitCard {
-                Label("Automatic routing", systemImage: "arrow.triangle.branch").font(.headline)
-                modelRow("Luna", detail: "Everyday tasks", verified: model.modelInfo?.verified?.basic)
-                Divider()
-                modelRow("Sol", detail: "Deeper work", verified: model.modelInfo?.verified?.advanced)
-                Button("Check availability") { Task { await model.refreshModelInfo(verify: true) } }
-                    .buttonStyle(.bordered).controlSize(.large)
-                if let error = model.modelInfo?.verifyError { errorDetails(error) }
-                DisclosureGroup("Plan details") {
-                    Text("Uses your ChatGPT allowance.").font(.caption).foregroundStyle(.secondary)
-                    if let info = model.modelInfo {
-                        Text("\(info.basicModel)\n\(info.advancedModel)").font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                }.font(.callout)
+            .padding(OrbitTheme.rowHorizontal)
+        }
+        OrbitGroup(header: "Models", footer: modelFootnote) {
+            modelRow("Luna", detail: "Everyday tasks, quick replies", symbol: "moon.fill", tint: Color(red: 0.4, green: 0.45, blue: 0.95), verified: model.modelInfo?.verified?.basic)
+            OrbitRowDivider()
+            modelRow("Sol", detail: "Deeper reasoning and multi-step work", symbol: "sun.max.fill", tint: Color(red: 0.98, green: 0.62, blue: 0.2), verified: model.modelInfo?.verified?.advanced)
+            if let error = model.modelInfo?.verifyError { errorRow(id: "verify", error) }
+            OrbitRowDivider(inset: 0)
+            Button {
+                verifying = true
+                Task { await model.refreshModelInfo(verify: true); verifying = false }
+            } label: {
+                OrbitRow(title: verifying ? "Checking…" : "Check availability", titleColor: .accentColor) {
+                    if verifying { ProgressView().controlSize(.small) }
+                }
+            }
+            .buttonStyle(OrbitRowButtonStyle()).disabled(verifying)
+        }
+    }
+
+    private var modelFootnote: String? {
+        guard let info = model.modelInfo else { return nil }
+        return "Automatic routing picks a model per message. Type /luna or /sol to choose. Using \(info.basicModel) and \(info.advancedModel)."
+    }
+
+    private func modelRow(_ title: String, detail: String, symbol: String, tint: Color, verified: Bool?) -> some View {
+        OrbitRow(symbol: symbol, tint: tint, title: title, subtitle: detail) {
+            if let verified {
+                Image(systemName: verified ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .font(.system(size: OrbitTheme.isMac ? 14 : 18))
+                    .foregroundStyle(verified ? .green : .orange)
+                    .accessibilityLabel(verified ? "Available" : "Unavailable")
             }
         }
     }
 
-    private func modelRow(_ title: String, detail: String, verified: Bool?) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.body.weight(.medium))
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+    // MARK: Connections
+
+    @ViewBuilder private var connectionSettings: some View {
+        if !connectedAccounts.isEmpty {
+            OrbitGroup(header: "Connected") {
+                ForEach(Array(connectedAccounts.enumerated()), id: \.element.id) { index, account in
+                    if index > 0 { OrbitRowDivider() }
+                    accountRow(account)
+                }
             }
-            Spacer()
-            if let verified { Image(systemName: verified ? "checkmark.circle.fill" : "exclamationmark.circle").foregroundStyle(verified ? .green : .orange) }
+        }
+        OrbitGroup(header: connectedAccounts.isEmpty ? "Connect an account" : "Add another",
+                     footer: "Orbit reads what you connect so it can help. Sending, posting and submitting always wait for your approval.") {
+            Button {
+                Task {
+                    guard let api = model.api else { return }
+                    do { if let url = URL(string: try await api.googleLink(label: "").url) { openURL(url) } }
+                    catch { model.banner = error.localizedDescription }
+                }
+            } label: {
+                OrbitRow(symbol: OrbitProvider.symbol("google"), tint: OrbitProvider.tint("google"), title: "Google", subtitle: "Gmail and Drive", accessory: .external)
+            }.buttonStyle(OrbitRowButtonStyle())
+            OrbitRowDivider()
+            providerLink(.icloud, provider: "icloud", subtitle: "Mail over IMAP")
+            OrbitRowDivider()
+            providerLink(.github, provider: "github", subtitle: "Issues, pull requests and code")
+            OrbitRowDivider()
+            providerLink(.canvas, provider: "canvas", subtitle: "Courses and deadlines")
         }
     }
 
-    private var connectionSettings: some View {
-        Group {
-            if !connectedAccounts.isEmpty {
-                OrbitCard {
-                    Text("Connected").font(.headline)
-                    ForEach(connectedAccounts) { account in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(account.label).font(.body.weight(.medium))
-                                Text(account.provider.capitalized).font(.caption).foregroundStyle(.secondary)
-                                if let error = account.lastError { errorDetails(error) }
-                            }
-                            Spacer()
-                            Menu {
-                                Button("Disconnect", role: .destructive) { Task { await model.perform { try await $0.disconnect(accountId: account.id) } } }
-                            } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
-                            .fixedSize()
-                        }
-                    }
-                }
-            }
-            OrbitCard {
-                Text("Add an account").font(.headline)
-                Button {
-                    Task {
-                        guard let api = model.api else { return }
-                        do { if let url = URL(string: try await api.googleLink(label: "").url) { openURL(url) } }
-                        catch { model.banner = error.localizedDescription }
-                    }
+    private func providerLink(_ destination: SettingsDestination, provider: String, subtitle: String) -> some View {
+        Button { navigation.push(destination) } label: {
+            OrbitRow(symbol: OrbitProvider.symbol(provider), tint: OrbitProvider.tint(provider), title: destination.rawValue, subtitle: subtitle, accessory: .chevron)
+        }.buttonStyle(OrbitRowButtonStyle())
+    }
+
+    private func accountRow(_ account: Account) -> some View {
+        VStack(spacing: 0) {
+            OrbitRow(symbol: OrbitProvider.symbol(account.provider), tint: OrbitProvider.tint(account.provider),
+                     title: account.label.isEmpty ? OrbitProvider.name(account.provider) : account.label,
+                     subtitle: accountSubtitle(account)) {
+                if account.lastError != nil { OrbitBadge(text: "Issue", tint: .orange) }
+                Menu {
+                    Button("Disconnect", role: .destructive) { Task { await model.perform { try await $0.disconnect(accountId: account.id) } } }
                 } label: {
-                    HStack {
-                        Image(systemName: "envelope").frame(width: 30)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Google").fontWeight(.medium)
-                            Text("Gmail & Drive").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "plus").foregroundStyle(.secondary)
-                    }.padding(.vertical, 4).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                Divider()
-                destinationRow(.icloud, icon: "icloud", subtitle: "Mail")
-                Divider()
-                destinationRow(.github, icon: "chevron.left.forwardslash.chevron.right", subtitle: "Repositories")
-                Divider()
-                destinationRow(.canvas, icon: "graduationcap", subtitle: "Courses")
+                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                        .frame(width: 30, height: 30).contentShape(Rectangle())
+                }
+                .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                .accessibilityLabel("Options for \(account.label)")
             }
+            if let error = account.lastError { errorRow(id: account.id, error) }
         }
     }
 
-    private var iCloudSettings: some View {
-        OrbitCard {
-            TextField("Email", text: $icloudUser).textContentType(.username).autocorrectionDisabled()
-            Divider()
-            SecureField("App-specific password", text: $icloudPassword)
-            Button("Connect") {
+    private func accountSubtitle(_ account: Account) -> String {
+        var parts = [OrbitProvider.name(account.provider)]
+        if let synced = account.lastSyncAt { parts.append("synced \(synced.date.formatted(.relative(presentation: .named)))") }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: Integration forms
+
+    @ViewBuilder private var iCloudSettings: some View {
+        OrbitHero(symbol: OrbitProvider.symbol("icloud"), tint: OrbitProvider.tint("icloud"), title: "iCloud Mail",
+                  detail: "Lets Orbit search and read your iCloud inbox. Your Apple ID password is never used.")
+        OrbitGroup(header: "Account",
+                     footer: "Create an app-specific password at account.apple.com → Sign-In and Security. You can revoke it there any time.") {
+            OrbitFieldRow(label: "Email", prompt: "you@icloud.com", text: $icloudUser)
+                #if os(iOS)
+                .textContentType(.username).keyboardType(.emailAddress)
+                #endif
+            OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
+            OrbitFieldRow(label: "App-specific password", prompt: "xxxx-xxxx-xxxx-xxxx", text: $icloudPassword, secure: true)
+        }
+        VStack(spacing: 10) {
+            Button("Connect iCloud Mail") {
                 let user = icloudUser, password = icloudPassword
                 icloudPassword = ""
                 Task { await model.perform { try await $0.connectICloud(username: user, appPassword: password) } }
-            }.buttonStyle(.borderedProminent).controlSize(.large).disabled(icloudUser.isEmpty || icloudPassword.isEmpty)
-            Link("Get an app-specific password", destination: URL(string: "https://account.apple.com")!).font(.caption)
-        }.textFieldStyle(.plain)
+            }
+            .buttonStyle(.orbitPrimary).disabled(icloudUser.isEmpty || icloudPassword.isEmpty)
+            Link(destination: URL(string: "https://account.apple.com")!) {
+                Label("Get an app-specific password", systemImage: "arrow.up.right")
+                    .font(OrbitTheme.footnote.weight(.medium))
+            }
+        }
         .onDisappear { icloudPassword = "" }
     }
 
-    private func tokenSettings(_ provider: SettingsDestination) -> some View {
-        OrbitCard {
-            if provider == .canvas {
-                TextField("School URL", text: $canvasURL).autocorrectionDisabled()
-                Divider()
+    @ViewBuilder private func tokenSettings(_ destination: SettingsDestination) -> some View {
+        let provider = destination == .github ? "github" : "canvas"
+        OrbitHero(symbol: OrbitProvider.symbol(provider), tint: OrbitProvider.tint(provider), title: destination.rawValue,
+                  detail: destination == .github
+                    ? "Read issues, pull requests and repositories you choose. Comments and merges wait for approval."
+                    : "See your courses, assignments and due dates. Submissions wait for approval.")
+        OrbitGroup(header: "Access",
+                     footer: destination == .github
+                        ? "GitHub → Settings → Developer settings → Fine-grained tokens. Grant read access to the repositories Orbit should see."
+                        : "Canvas → Account → Settings → New Access Token. Use your school’s Canvas address, like canvas.school.edu.") {
+            if destination == .canvas {
+                OrbitFieldRow(label: "School URL", prompt: "https://canvas.school.edu", text: $canvasURL)
+                    #if os(iOS)
+                    .keyboardType(.URL)
+                    #endif
+                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
             }
-            SecureField("Access token", text: $token)
-            Button("Connect") {
-                let value = token, base = provider == .canvas ? canvasURL : nil
-                token = ""
-                Task { await model.perform { try await $0.connectToken(provider: provider.rawValue.lowercased(), token: value, baseURL: base) } }
-            }.buttonStyle(.borderedProminent).controlSize(.large).disabled(token.isEmpty || (provider == .canvas && canvasURL.isEmpty))
-            DisclosureGroup("Where to find your token") {
-                Text(provider == .github ? "GitHub Settings → Developer settings → Fine-grained tokens." : "Canvas Account → Settings → New Access Token.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }.font(.callout)
+            OrbitFieldRow(label: "Access token", prompt: "Paste your token", text: $token, secure: true)
         }
-        .textFieldStyle(.plain)
+        Button("Connect \(destination.rawValue)") {
+            let value = token, base = destination == .canvas ? canvasURL : nil
+            token = ""
+            Task { await model.perform { try await $0.connectToken(provider: destination.rawValue.lowercased(), token: value, baseURL: base) } }
+        }
+        .buttonStyle(.orbitPrimary).disabled(token.isEmpty || (destination == .canvas && canvasURL.isEmpty))
         .onAppear { token = "" }
         .onDisappear { token = "" }
     }
 
-    private var deviceSettings: some View {
-        Group {
-            OrbitCard {
-                ForEach(store.devices.values.filter { $0.revokedAt == nil }.sorted { $0.name < $1.name }) { device in
-                    HStack(spacing: 14) {
-                        Image(systemName: device.kind == "mac" ? "laptopcomputer" : "iphone").font(.title3).frame(width: 30)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(device.name).font(.body.weight(.medium))
-                            Text(device.lastSeenAt.map { $0.date.formatted(.relative(presentation: .named)) } ?? "Paired")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+    // MARK: Devices
+
+    @ViewBuilder private var deviceSettings: some View {
+        OrbitGroup(header: "Paired devices",
+                     footer: "Calendar, Reminders and Mac actions run on these devices. Edits always run on the device that has the item.") {
+            if devices.isEmpty {
+                OrbitRow(title: "No devices yet", subtitle: "Pair your Mac or iPhone to sync")
+            }
+            ForEach(Array(devices.enumerated()), id: \.element.id) { index, device in
+                if index > 0 { OrbitRowDivider() }
+                OrbitRow(symbol: device.kind == "mac" ? "laptopcomputer" : "iphone", tint: Color(white: 0.4),
+                         title: device.name,
+                         subtitle: device.lastSeenAt.map { "Active \($0.date.formatted(.relative(presentation: .named)))" } ?? "Paired, not seen yet") {
+                    if let seen = device.lastSeenAt?.date, Date().timeIntervalSince(seen) < 5 * 60 {
+                        OrbitBadge(text: "Online", tint: .green)
                     }
                 }
-                Button("Pair a device") { Task { pairing = try? await model.api?.createPairingCode() } }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
             }
-            if let pairing {
-                OrbitCard {
-                    Text(pairing.code).font(.system(.largeTitle, design: .monospaced)).textSelection(.enabled)
-                    Text("Expires \(pairing.expiresAt.date.formatted(date: .omitted, time: .shortened))")
-                        .font(.caption).foregroundStyle(.secondary)
+        }
+        if let pairing {
+            pairingCard(pairing)
+        }
+        Button {
+            creatingCode = true
+            Task {
+                pairing = try? await model.api?.createPairingCode()
+                creatingCode = false
+                copied = false
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if creatingCode { ProgressView().controlSize(.small).tint(.black) }
+                Text(pairing == nil ? "Pair a new device" : "Get a new code")
+            }
+        }
+        .buttonStyle(pairing == nil ? OrbitButtonStyle(kind: .primary) : OrbitButtonStyle(kind: .secondary))
+        .disabled(creatingCode)
+    }
+
+    private func pairingCard(_ pairing: APIClient.PairingCode) -> some View {
+        VStack(spacing: OrbitTheme.isMac ? 10 : 14) {
+            Text("PAIRING CODE").font(OrbitTheme.sectionHeader).tracking(1).foregroundStyle(.secondary)
+            Text(pairing.code.map(String.init).joined(separator: " "))
+                .font(.system(size: OrbitTheme.isMac ? 26 : 32, weight: .semibold, design: .monospaced))
+                .textSelection(.enabled).minimumScaleFactor(0.6).lineLimit(1)
+                .accessibilityLabel("Pairing code \(pairing.code)")
+            Text("Enter this on your other device. Expires at \(pairing.expiresAt.date.formatted(date: .omitted, time: .shortened)).")
+                .font(OrbitTheme.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button {
+                copy(pairing.code)
+                copied = true
+            } label: {
+                Label(copied ? "Copied" : "Copy code", systemImage: copied ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(OrbitButtonStyle(kind: .secondary, fullWidth: false))
+        }
+        .padding(OrbitTheme.isMac ? 18 : 22)
+        .frame(maxWidth: .infinity)
+        .background(OrbitTheme.raised, in: RoundedRectangle(cornerRadius: OrbitTheme.sectionRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: OrbitTheme.sectionRadius, style: .continuous)
+            .stroke(Color.white.opacity(0.16), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+    }
+
+    private func copy(_ text: String) {
+        #if os(iOS)
+        UIPasteboard.general.string = text
+        #else
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #endif
+    }
+
+    // MARK: Data & privacy
+
+    @ViewBuilder private var dataSettings: some View {
+        OrbitGroup(header: "Sync") {
+            OrbitRow(symbol: "arrow.triangle.2.circlepath", tint: store.lastSyncError == nil ? Color(red: 0.2, green: 0.72, blue: 0.42) : .orange,
+                     title: "Last sync",
+                     accessory: .value(store.lastSyncAt?.formatted(date: .omitted, time: .shortened) ?? "Not yet"))
+            if let error = store.lastSyncError { errorRow(id: "sync", error) }
+            OrbitRowDivider()
+            OrbitRow(symbol: "server.rack", tint: Color(white: 0.4), title: "Server", subtitle: serverHost)
+                .textSelection(.enabled)
+            OrbitRowDivider(inset: 0)
+            Button {
+                syncing = true
+                Task { await model.tick(); syncing = false }
+            } label: {
+                OrbitRow(title: syncing ? "Syncing…" : "Sync now", titleColor: .accentColor) {
+                    if syncing { ProgressView().controlSize(.small) }
                 }
             }
+            .buttonStyle(OrbitRowButtonStyle()).disabled(syncing)
+        }
+        OrbitGroup(header: "Your data", footer: "Exports your memory, tracked items and conversation as a Markdown file.") {
+            Button {
+                Task {
+                    guard let api = model.api else { return }
+                    do { exportDoc = MarkdownDoc(data: try await api.exportMarkdown()) }
+                    catch { model.banner = error.localizedDescription }
+                }
+            } label: {
+                OrbitRow(symbol: "square.and.arrow.up", tint: Color(red: 0.3, green: 0.5, blue: 0.98), title: "Export memory & history", accessory: .chevron)
+            }.buttonStyle(OrbitRowButtonStyle())
+        }
+        OrbitGroup(header: "This device") {
+            Button { confirmUnpair = true } label: {
+                OrbitRow(symbol: "xmark", tint: Color(red: 0.95, green: 0.33, blue: 0.3), title: "Unpair this device",
+                         titleColor: Color(red: 1, green: 0.45, blue: 0.42))
+            }.buttonStyle(OrbitRowButtonStyle())
         }
     }
 
-    private var dataSettings: some View {
-        Group {
-            OrbitCard {
-                LabeledContent("Last sync", value: store.lastSyncAt?.formatted(date: .omitted, time: .shortened) ?? "Not yet")
-                if let error = store.lastSyncError { errorDetails(error) }
-                Button("Sync now") { Task { await model.tick() } }.buttonStyle(.bordered)
-                DisclosureGroup("Server") { Text(model.serverURL).font(.caption.monospaced()).textSelection(.enabled) }
-            }
-            OrbitCard {
-                Button("Export memory & history") {
-                    Task {
-                        guard let api = model.api else { return }
-                        do { exportDoc = MarkdownDoc(data: try await api.exportMarkdown()) }
-                        catch { model.banner = error.localizedDescription }
-                    }
-                }
-                Divider()
-                Button("Unpair this device", role: .destructive) { confirmUnpair = true }
-            }
-        }
-    }
+    // MARK: Mac
 
     #if os(macOS)
-    private var macSettings: some View {
-        OrbitCard {
-            Button("Open Orbit folder") { NSWorkspace.shared.open(MacExecutor.orbitDir) }.buttonStyle(.bordered).controlSize(.large)
-            Button("Refresh access") { Task { await model.registerCapabilities() } }
-            DisclosureGroup("Scripts") {
-                Text("Add executable scripts to ~/Orbit/Scripts.").font(.caption).foregroundStyle(.secondary)
-                Text(MacExecutor.allowListedScripts().joined(separator: ", ").isEmpty ? "No scripts added" : MacExecutor.allowListedScripts().joined(separator: ", "))
-                    .font(.caption.monospaced())
+    @ViewBuilder private var macSettings: some View {
+        let scripts = MacExecutor.allowListedScripts()
+        OrbitHero(symbol: "folder.fill", tint: Color(red: 0.25, green: 0.6, blue: 0.95), title: "Mac access",
+                  detail: "Orbit can search and read files, and run scripts you place in your Orbit folder.")
+        OrbitGroup(header: "Folder") {
+            Button { NSWorkspace.shared.open(MacExecutor.orbitDir) } label: {
+                OrbitRow(symbol: "folder", tint: Color(red: 0.25, green: 0.6, blue: 0.95), title: "Open Orbit folder", subtitle: MacExecutor.orbitDir.path, accessory: .external)
+            }.buttonStyle(OrbitRowButtonStyle())
+            OrbitRowDivider()
+            Button { Task { await model.registerCapabilities() } } label: {
+                OrbitRow(symbol: "arrow.clockwise", tint: Color(white: 0.4), title: "Refresh access", subtitle: "Re-share what this Mac can do")
+            }.buttonStyle(OrbitRowButtonStyle())
+        }
+        OrbitGroup(header: "Allowed scripts", footer: "Add executable scripts to ~/Orbit/Scripts. Only these run without asking.") {
+            if scripts.isEmpty {
+                OrbitRow(symbol: "terminal", tint: Color(white: 0.3), title: "No scripts added")
+            }
+            ForEach(Array(scripts.enumerated()), id: \.offset) { index, script in
+                if index > 0 { OrbitRowDivider() }
+                OrbitRow(symbol: "terminal.fill", tint: Color(white: 0.3), title: script)
             }
         }
     }
     #endif
 
-    private func errorDetails(_ error: String) -> some View {
-        DisclosureGroup("Connection details") { Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-            .font(.caption).foregroundStyle(.orange)
+    // MARK: Helpers
+
+    private func errorRow(id: String, _ error: String) -> some View {
+        let open = expandedErrors.contains(id)
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    if open { expandedErrors.remove(id) } else { expandedErrors.insert(id) }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("Connection details")
+                    Spacer()
+                    Image(systemName: "chevron.down").rotationEffect(.degrees(open ? 180 : 0))
+                }
+                .font(OrbitTheme.footnote.weight(.medium)).foregroundStyle(.orange)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if open {
+                Text(error).font(OrbitTheme.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, OrbitTheme.rowHorizontal)
+        .padding(.leading, OrbitTheme.tileSize + 12)
+        .padding(.bottom, OrbitTheme.rowVertical)
     }
 
     private func connectChatGPT() {
