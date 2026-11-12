@@ -59,6 +59,7 @@ struct OrbitHomeView: View {
     @StateObject private var settingsNavigation = OrbitSettingsNavigation()
     @State private var sidebarOpen = false
     @State private var sidebarOpenedByHover = false
+    @State private var hoveredDestination: OrbitSection?
     @FocusState private var composerFocused: Bool
     @State private var restoreComposerFocus = false
     @State private var showActivity = false
@@ -247,65 +248,49 @@ struct OrbitHomeView: View {
 
     private var drawer: some View {
         VStack(alignment: .leading, spacing: 0) {
-            drawerBrand
-                .padding(.horizontal, 8)
-                .padding(.bottom, OrbitTheme.isMac ? 18 : 26)
-            VStack(spacing: 2) {
+            HStack {
+                Text("Orbit")
+                    .font(.system(size: OrbitTheme.isMac ? 24 : 30, weight: .semibold, design: .rounded))
+                    .tracking(-0.7)
+                Spacer()
+                Button { setSidebar(false) } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, height: 30)
+                        .background(.white.opacity(0.045), in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain).accessibilityLabel("Close sidebar")
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, OrbitTheme.isMac ? 28 : 32)
+            VStack(spacing: 6) {
                 ForEach(OrbitSection.allCases.filter { $0 != .settings }) { destination in
                     drawerRow(destination)
                 }
             }
-            Spacer(minLength: 20)
-            drawerStatus.padding(.horizontal, 8).padding(.bottom, 12)
-            Rectangle().fill(OrbitTheme.hairline).frame(height: 0.5).padding(.horizontal, 8).padding(.bottom, 8)
+            Spacer(minLength: 24)
             drawerRow(.settings)
+            drawerStatus.padding(.horizontal, 14).padding(.top, 18).padding(.bottom, 4)
         }
-        .padding(.horizontal, OrbitTheme.isMac ? 10 : 14)
-        .padding(.vertical, OrbitTheme.isMac ? 12 : 16)
+        .padding(.horizontal, OrbitTheme.isMac ? 14 : 16)
+        .padding(.vertical, OrbitTheme.isMac ? 18 : 22)
         #if os(macOS)
         .padding(.top, 34)
         #endif
     }
 
-    private var drawerBrand: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle().stroke(.white.opacity(0.9), lineWidth: OrbitTheme.isMac ? 1.6 : 2)
-                    .frame(width: OrbitTheme.isMac ? 15 : 19, height: OrbitTheme.isMac ? 15 : 19)
-                Circle().fill(.white).frame(width: OrbitTheme.isMac ? 5 : 6, height: OrbitTheme.isMac ? 5 : 6)
-                    .offset(x: OrbitTheme.isMac ? 10 : 12.5, y: OrbitTheme.isMac ? -6 : -8)
-            }
-            .frame(width: OrbitTheme.isMac ? 34 : 42, height: OrbitTheme.isMac ? 34 : 42)
-            .background(
-                LinearGradient(colors: [Color(red: 0.32, green: 0.36, blue: 0.95), Color(red: 0.55, green: 0.3, blue: 0.85)], startPoint: .topLeading, endPoint: .bottomTrailing),
-                in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 9 : 12, style: .continuous)
-            )
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Orbit").font(.system(size: OrbitTheme.isMac ? 16 : 20, weight: .bold, design: .rounded))
-                Text(assistantStatus).font(OrbitTheme.rowSubtitle).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 0)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var assistantStatus: String {
-        guard let info = model.modelInfo else { return "Personal assistant" }
-        return info.chatgptAccounts.contains { $0.status == "active" } ? "Luna & Sol ready" : "Connect ChatGPT in Settings"
-    }
-
     private var drawerStatus: some View {
-        let devices = store.devices.values.filter { $0.revokedAt == nil }.count
         let failing = store.lastSyncError != nil
-        return HStack(spacing: 8) {
-            Circle().fill(failing ? Color.orange : Color.green).frame(width: 7, height: 7)
-            Text(failing ? "Sync issue" : store.lastSyncAt.map { "Synced \($0.formatted(.relative(presentation: .named)))" } ?? "Connecting…")
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Label("\(devices)", systemImage: "laptopcomputer.and.iphone").labelStyle(.titleAndIcon)
-                .accessibilityLabel("\(devices) devices")
+        let connected = store.lastSyncAt != nil
+        return HStack(spacing: 7) {
+            Circle().fill(failing ? Color.orange.opacity(0.8) : connected ? Color.green.opacity(0.7) : Color.secondary)
+                .frame(width: 5, height: 5)
+            Text(failing ? "Sync needs attention" : connected ? "Up to date" : "Connecting…")
         }
-        .font(OrbitTheme.footnote).foregroundStyle(.secondary)
+        .font(.system(size: OrbitTheme.isMac ? 11 : 12))
+        .foregroundStyle(.tertiary)
     }
 
     private func drawerBadge(_ destination: OrbitSection) -> (Int, Color)? {
@@ -331,8 +316,8 @@ struct OrbitHomeView: View {
                     .font(.system(size: OrbitTheme.isMac ? 14 : 17, weight: selected ? .semibold : .regular))
                     .frame(width: OrbitTheme.isMac ? 20 : 26)
                     .foregroundStyle(selected ? .primary : .secondary)
-                Text(destination.rawValue)
-                    .font(.system(size: OrbitTheme.isMac ? 13.5 : 17, weight: selected ? .semibold : .regular))
+                Text(destination == .chat ? "Chat" : destination.rawValue)
+                    .font(.system(size: OrbitTheme.isMac ? 14 : 17, weight: selected ? .semibold : .medium))
                     .foregroundStyle(selected ? .primary : Color.white.opacity(0.78))
                 Spacer()
                 if let (count, tint) = drawerBadge(destination) {
@@ -344,12 +329,16 @@ struct OrbitHomeView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .frame(minHeight: OrbitTheme.isMac ? 34 : 48)
-            .background(selected ? OrbitTheme.selection : .clear, in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 8 : 13, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 8 : 13, style: .continuous))
+            .frame(minHeight: OrbitTheme.isMac ? 40 : 50)
+            .background(selected ? Color.white.opacity(0.085) : hoveredDestination == destination ? Color.white.opacity(0.035) : .clear,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(selected ? Color.white.opacity(0.055) : .clear, lineWidth: 0.5))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .onHover { hoveredDestination = $0 ? destination : nil }
     }
 
     /// Task status and history live one tap away from the chat instead of in a separate destination.
