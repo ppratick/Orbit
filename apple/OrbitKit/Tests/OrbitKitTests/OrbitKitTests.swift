@@ -28,7 +28,7 @@ final class OrbitKitTests: XCTestCase {
         let r = try JSONDecoder.orbit.decode(SyncResponse.self, from: Data(json.utf8))
         XCTAssertEqual(r.changes.profile?.first?.content, "Sam")
         XCTAssertEqual(r.changes.profileSuggestion?.first?.section, "work")
-        XCTAssertEqual(ProfileSection.catalog.map(\.id), ["name", "timezone", "school", "year", "work", "wake", "bedtime", "routines", "goals", "context"])
+        XCTAssertEqual(ProfileSection.catalog.map(\.id), ["first_name", "last_name", "nickname", "timezone", "school", "major", "year", "work", "goals", "context"])
     }
 
     @MainActor

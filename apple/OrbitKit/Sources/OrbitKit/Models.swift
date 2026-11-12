@@ -89,20 +89,22 @@ public struct ProfileSection: Codable, Identifiable, Hashable, Sendable {
     }
 
     /// The fixed set of fields, in display order. Short fields hold one value; the rest are notes.
+    /// The form's fields in display order: label, example placeholder, and whether it is a notes box.
     public static let catalog: [(id: String, title: String, question: String, symbol: String, multiline: Bool)] = [
-        ("name", "Name", "What should Orbit call you?", "person.fill", false),
-        ("timezone", "Time zone", "Choose", "globe.americas.fill", false),
-        ("school", "School", "e.g. CMU, Computer Science", "graduationcap.fill", false),
-        ("year", "Year", "Choose", "calendar", false),
-        ("work", "Work", "Job or role, if any", "briefcase.fill", false),
-        ("wake", "Wake up", "Add", "sunrise.fill", false),
-        ("bedtime", "Bedtime", "Add", "moon.fill", false),
-        ("routines", "Routines", "When you work, exercise, wind down", "clock.fill", true),
-        ("goals", "Goals & interests", "What you’re working toward, what you enjoy", "star.fill", true),
-        ("context", "Anything else", "Anything else Orbit should keep in mind", "text.alignleft", true),
+        ("first_name", "First name", "e.g. Alex", "person.fill", false),
+        ("last_name", "Last name", "e.g. Rivera", "person.fill", false),
+        ("nickname", "What would you like Orbit to call you?", "e.g. Alex, or a nickname", "person.wave.2.fill", false),
+        ("timezone", "Time zone", "Select your time zone", "globe.americas.fill", false),
+        ("school", "School", "e.g. Carnegie Mellon University", "graduationcap.fill", false),
+        ("major", "Major or program", "e.g. Computer Science", "book.fill", false),
+        ("year", "Year", "Select", "calendar", false),
+        ("work", "Work", "Select", "briefcase.fill", false),
+        ("goals", "Goals & interests", "e.g. Land a summer internship, run a half marathon, learn piano", "star.fill", true),
+        ("context", "Anything else Orbit should know", "e.g. I do my best work in the mornings", "text.alignleft", true),
     ]
     /// Ready-made choices for the fields that have them.
     public static let yearOptions = ["Freshman", "Sophomore", "Junior", "Senior", "Graduate student", "Not in school"]
+    public static let workOptions = ["Student", "Part-time", "Full-time"]
     public static func title(for id: String) -> String { catalog.first { $0.id == id }?.title ?? id.capitalized }
 }
 

@@ -182,7 +182,7 @@ describe("About you profile", () => {
     expect(appendLine("Has a dog.", "has a DOG")).toBe("Has a dog.");
   });
   it("formats only filled sections for the assistant, in a fixed order", () => {
-    const out = profileForPrompt([{ id: "goals", content: "Run a marathon" }, { id: "name", content: "Sam" }, { id: "timezone", content: "Eastern" }, { id: "wake", content: "7:00 AM" }, { id: "work", content: " " }]);
-    expect(out).toBe("Name: Sam\nTime zone: Eastern\nUsually wakes up: 7:00 AM\nGoals & interests:\n  Run a marathon");
+    const out = profileForPrompt([{ id: "goals", content: "Run a marathon" }, { id: "first_name", content: "Sam" }, { id: "timezone", content: "Eastern" }, { id: "work", content: " " }]);
+    expect(out).toBe("First name: Sam\nTime zone: Eastern\nGoals & interests:\n  Run a marathon");
   });
 });

@@ -265,17 +265,17 @@ try {
   });
   await step("About you: user edits sync, chat facts become suggestions, user stays in charge", async () => {
     const p0 = (await api("/v1/profile", { token: phone })).body;
-    assert.deepEqual(p0.sections.map((x) => x.id), ["name", "timezone", "school", "year", "work", "wake", "bedtime", "routines", "goals", "context"]);
+    assert.deepEqual(p0.sections.map((x) => x.id), ["first_name", "last_name", "nickname", "timezone", "school", "major", "year", "work", "goals", "context"]);
     const basics = p0.sections[0];
-    const put = await api("/v1/profile/name", { method: "PUT", token: phone, body: { content: "Sam", base_updated_at: basics.updated_at } });
+    const put = await api("/v1/profile/first_name", { method: "PUT", token: phone, body: { content: "Sam", base_updated_at: basics.updated_at } });
     assert.equal(put.status, 200, JSON.stringify(put.body));
-    const stale = await api("/v1/profile/name", { method: "PUT", token: mac, body: { content: "Overwrite", base_updated_at: basics.updated_at - 1 } });
+    const stale = await api("/v1/profile/first_name", { method: "PUT", token: mac, body: { content: "Overwrite", base_updated_at: basics.updated_at - 1 } });
     assert.equal(stale.status, 409, "a stale edit from another device never overwrites a newer one");
-    await api("/v1/profile/work", { method: "PUT", token: mac, body: { content: "Research assistant" } });
+    await api("/v1/profile/work", { method: "PUT", token: mac, body: { content: "Part-time" } });
     const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: "I study at CMU, computer science", client_msg_id: "p1" } });
     assert.match(r.body.messages[1].content, /waiting for their review/);
     let p = (await api("/v1/profile", { token: mac })).body;
-    assert.equal(p.sections.find((x) => x.id === "work").content, "Research assistant", "suggestions never edit the profile");
+    assert.equal(p.sections.find((x) => x.id === "work").content, "Part-time", "suggestions never edit the profile");
     assert.equal(p.suggestions.length, 1);
     const again = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: "I study at CMU, again", client_msg_id: "p2" } });
     assert.match(again.body.messages[1].content, /already waiting/);
@@ -288,9 +288,9 @@ try {
     assert.match(reviewed.body.messages[1].content, /already says this/);
     await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: "hello profile", client_msg_id: "p4" } });
     const instr = requests.at(-1).instructions;
-    assert.ok(instr.includes("Name: Sam") && instr.includes("Studies computer science at CMU"), "profile is assistant context");
+    assert.ok(instr.includes("First name: Sam") && instr.includes("Studies computer science at CMU"), "profile is assistant context");
     const s = (await api("/v1/sync?since=0", { token: mac })).body;
-    assert.equal(s.changes.profile.length, 12, "10 fields plus the retired basics and people rows");
+    assert.equal(s.changes.profile.length, 16, "10 fields plus 6 retired rows");
     assert.ok(s.changes.profile_suggestion.length >= 1 && !JSON.stringify(s.changes.profile_suggestion).includes('"norm"'));
   });
   let calTask;
@@ -461,7 +461,7 @@ try {
   await step("Markdown export includes memory, responsibilities and conversations", async () => {
     const md = (await api("/v1/export.md")).body;
     assert.match(md, /## Preferences\n\n- Prefers short replies/);
-    assert.match(md, /## About you\n\n### Name\n\nSam/);
+    assert.match(md, /## About you\n\n### First name\n\nSam/);
     assert.match(md, /Return headphones/);
     assert.match(md, /### Please remember I like short replies/);
   });

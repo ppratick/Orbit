@@ -7,14 +7,14 @@ import { newId, now } from "./util";
  * assistant learns in conversation become suggestions that change nothing until accepted.
  */
 export const PROFILE_SECTIONS = [
-  { id: "name", title: "Name", question: "What Orbit should call you.", kind: "line" },
-  { id: "timezone", title: "Time zone", question: "Where you usually are.", kind: "choice" },
-  { id: "school", title: "School", question: "Where you study and what.", kind: "line" },
+  { id: "first_name", title: "First name", question: "Their first name.", kind: "line" },
+  { id: "last_name", title: "Last name", question: "Their last name.", kind: "line" },
+  { id: "nickname", title: "Preferred name", question: "What they'd like Orbit to call them.", kind: "line" },
+  { id: "timezone", title: "Time zone", question: "Where they usually are.", kind: "choice" },
+  { id: "school", title: "School", question: "Where they study.", kind: "line" },
+  { id: "major", title: "Major or program", question: "What they study.", kind: "line" },
   { id: "year", title: "Year", question: "Year in school.", kind: "choice" },
-  { id: "work", title: "Work", question: "Your job or role, if you have one.", kind: "line" },
-  { id: "wake", title: "Usually wakes up", question: "Usual wake-up time.", kind: "time" },
-  { id: "bedtime", title: "Usually goes to bed", question: "Usual bedtime.", kind: "time" },
-  { id: "routines", title: "Routines", question: "When do you usually work, exercise or wind down?", kind: "text" },
+  { id: "work", title: "Work", question: "Student, part-time or full-time.", kind: "choice" },
   { id: "goals", title: "Goals & interests", question: "What are you working toward, and what do you enjoy?", kind: "text" },
   { id: "context", title: "Anything else", question: "Anything else Orbit should keep in mind.", kind: "text" },
 ] as const;

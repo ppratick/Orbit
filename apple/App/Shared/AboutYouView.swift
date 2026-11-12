@@ -1,9 +1,9 @@
 import OrbitKit
 import SwiftUI
 
-/// Settings → About you. One page of fields the user fills in directly; every field saves as you
-/// type and syncs to the other devices. Facts Orbit noticed in conversation wait at the top for
-/// review and change nothing until accepted.
+/// Settings → About you. A plain form: every field has a clear label above its own box, with an
+/// example of what to write. Fields save as you go and sync to your other devices. Facts Orbit
+/// noticed in conversation wait at the top for review and change nothing until accepted.
 struct AboutYouContent: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: OrbitStore
@@ -14,7 +14,7 @@ struct AboutYouContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: OrbitTheme.sectionSpacing) {
             OrbitHero(symbol: "person.crop.circle.fill", tint: Self.tint, title: "About you",
-                      detail: "Optional. Orbit reads this before it replies, so it can skip the questions it already knows the answers to.")
+                      detail: "All optional. Orbit reads this before it replies, so it doesn’t have to ask.")
             if !store.pendingProfileSuggestions.isEmpty {
                 OrbitGroup(header: "Suggested from your chats",
                            footer: "Orbit noticed these in conversation. Nothing changes in your profile unless you add it.") {
@@ -25,30 +25,33 @@ struct AboutYouContent: View {
                 }
                 .transition(.opacity)
             }
-            OrbitGroup(header: "Basics") {
-                ProfileField(id: "name")
-                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
+            FormCard(title: "Your name", symbol: "person.fill") {
+                HStack(alignment: .top, spacing: 12) {
+                    ProfileField(id: "first_name")
+                    ProfileField(id: "last_name")
+                }
+                ProfileField(id: "nickname")
+            }
+            FormCard(title: "Location", symbol: "globe.americas.fill") {
                 ProfileField(id: "timezone", options: Self.timeZoneOptions)
             }
-            OrbitGroup(header: "School & work") {
+            FormCard(title: "School & work", symbol: "graduationcap.fill") {
                 ProfileField(id: "school")
-                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
-                ProfileField(id: "year", options: ProfileSection.yearOptions)
-                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
-                ProfileField(id: "work")
+                ProfileField(id: "major")
+                HStack(alignment: .top, spacing: 12) {
+                    ProfileField(id: "year", options: ProfileSection.yearOptions)
+                    ProfileField(id: "work", options: ProfileSection.workOptions)
+                }
             }
-            OrbitGroup(header: "Routines") {
-                ProfileField(id: "wake", isTime: true)
-                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
-                ProfileField(id: "bedtime", isTime: true)
-                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
-                ProfileField(id: "routines")
-            }
-            OrbitGroup(header: "Goals & interests") { ProfileField(id: "goals") }
-            OrbitGroup(header: "Anything else",
-                       footer: "Saves as you go and syncs to your devices. What you set here takes priority over anything Orbit infers.") {
+            FormCard(title: "More about you", symbol: "star.fill") {
+                ProfileField(id: "goals")
                 ProfileField(id: "context")
             }
+            Text("Saves as you go and syncs to your devices. What you enter here takes priority over anything Orbit infers.")
+                .font(OrbitTheme.footnote).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, OrbitTheme.rowHorizontal)
+                .padding(.top, -OrbitTheme.sectionSpacing / 2)
         }
         .animation(.easeOut(duration: 0.2), value: store.pendingProfileSuggestions.map(\.id))
     }
@@ -104,16 +107,37 @@ struct AboutYouContent: View {
     }
 }
 
-/// One About you field, edited in place. Short fields sit beside their label; notes get a
-/// multi-line box. Saves a moment after typing stops, on Return, and when focus leaves.
+/// A titled card holding a group of labeled fields.
+private struct FormCard<Content: View>: View {
+    let title: String
+    let symbol: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OrbitTheme.isMac ? 12 : 16) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).font(.system(size: OrbitTheme.isMac ? 11 : 13, weight: .semibold))
+                    .foregroundStyle(AboutYouContent.tint)
+                Text(title).font(.system(size: OrbitTheme.isMac ? 13 : 16, weight: .semibold))
+            }
+            .accessibilityAddTraits(.isHeader)
+            content()
+        }
+        .padding(OrbitTheme.isMac ? 16 : 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(OrbitTheme.raised, in: RoundedRectangle(cornerRadius: OrbitTheme.sectionRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: OrbitTheme.sectionRadius, style: .continuous).stroke(OrbitTheme.hairline, lineWidth: 0.5))
+    }
+}
+
+/// One labeled field in its own box: a text box, a notes box, or a dropdown when it has options.
+/// Typed fields save a moment after typing stops, on Return, and when focus leaves.
 struct ProfileField: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: OrbitStore
     let id: String
-    /// Ready-made choices: the field becomes a pick list (time zone, year).
+    /// Ready-made choices: the field becomes a dropdown.
     var options: [String] = []
-    /// The field holds a time of day, picked with a time picker (wake-up, bedtime).
-    var isTime = false
     @State private var text = ""
     @State private var pending: Task<Void, Never>?
     @State private var error: String?
@@ -124,56 +148,56 @@ struct ProfileField: View {
     }
     private var stored: String { store.profileText(id) }
     private var changed: Bool { trimmed(text) != trimmed(stored) }
+    private var boxRadius: CGFloat { OrbitTheme.isMac ? 8 : 12 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if info.multiline {
-                TextField(info.question, text: $text, axis: .vertical)
-                    .lineLimit(2...8)
-                    .textFieldStyle(.plain).font(OrbitTheme.body)
-                    .focused($focused)
-            } else {
-                HStack(spacing: 12) {
-                    Text(info.title).font(OrbitTheme.rowTitle)
-                        .frame(width: OrbitTheme.isMac ? 82 : 96, alignment: .leading)
-                    if !options.isEmpty { optionPicker } else if isTime { timePicker } else {
-                        TextField(info.question, text: $text)
-                            .textFieldStyle(.plain).font(OrbitTheme.body)
-                            .focused($focused)
-                            .onSubmit(saveNow)
-                            #if os(iOS)
-                            .textInputAutocapitalization(id == "name" ? .words : .sentences)
-                            #endif
-                    }
+            Text(info.title)
+                .font(OrbitTheme.rowSubtitle.weight(.medium)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Group {
+                if !options.isEmpty {
+                    dropdown
+                } else if info.multiline {
+                    TextField(info.question, text: $text, axis: .vertical)
+                        .lineLimit(3...8)
+                        .focused($focused)
+                } else {
+                    TextField(info.question, text: $text)
+                        .focused($focused)
+                        .onSubmit(saveNow)
+                        #if os(iOS)
+                        .textInputAutocapitalization(["first_name", "last_name", "nickname", "school"].contains(id) ? .words : .sentences)
+                        #endif
+                        .autocorrectionDisabled(["first_name", "last_name", "nickname"].contains(id))
                 }
             }
+            .textFieldStyle(.plain).font(OrbitTheme.body)
+            .padding(.horizontal, OrbitTheme.isMac ? 10 : 12)
+            .padding(.vertical, OrbitTheme.isMac ? 8 : 11)
+            .frame(maxWidth: .infinity, minHeight: OrbitTheme.isMac ? 32 : 44, alignment: .leading)
+            .background(OrbitTheme.raisedHigh, in: RoundedRectangle(cornerRadius: boxRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: boxRadius, style: .continuous)
+                .stroke(focused ? AboutYouContent.tint.opacity(0.7) : Color.white.opacity(0.08), lineWidth: focused ? 1.2 : 0.5))
+            .contentShape(RoundedRectangle(cornerRadius: boxRadius, style: .continuous))
+            .onTapGesture { if options.isEmpty { focused = true } }
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(OrbitTheme.footnote).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, OrbitTheme.rowHorizontal)
-        .padding(.vertical, OrbitTheme.isMac ? 10 : 13)
-        .frame(minHeight: OrbitTheme.rowMinHeight)
-        .contentShape(Rectangle())
-        .onTapGesture { if options.isEmpty, !isTime { focused = true } }
-        .accessibilityElement(children: .contain)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { text = stored }
         // Another device changed it: show the new value unless the user is mid-edit here.
         .onChange(of: stored) { _, new in if !focused, pending == nil { text = new } }
-        .onChange(of: text) { _, _ in scheduleSave() }
+        .onChange(of: text) { _, _ in if options.isEmpty { scheduleSave() } }
         .onChange(of: focused) { _, isFocused in if !isFocused { saveNow() } }
         .onDisappear { if changed { saveNow() } }
     }
 
-    private func set(_ value: String) {
-        text = value
-        saveNow()
-    }
-
-    /// A menu of choices; an unknown saved value (typed before, or synced) still shows and stays selectable.
-    private var optionPicker: some View {
+    /// A menu of choices; a saved value that isn't one of them still shows and stays selectable.
+    private var dropdown: some View {
         Menu {
             ForEach(options.contains(text) || trimmed(text).isEmpty ? options : [text] + options, id: \.self) { option in
                 Button { set(option) } label: {
@@ -190,10 +214,9 @@ struct ProfileField: View {
                     .foregroundStyle(trimmed(text).isEmpty ? Color.secondary.opacity(0.7) : Color.primary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.up.chevron.down").font(.system(size: OrbitTheme.isMac ? 10 : 12, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                Image(systemName: "chevron.down").font(.system(size: OrbitTheme.isMac ? 10 : 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
             }
-            .font(OrbitTheme.body)
             .contentShape(Rectangle())
         }
         .menuStyle(.button).buttonStyle(.plain)
@@ -202,41 +225,9 @@ struct ProfileField: View {
         .accessibilityValue(trimmed(text).isEmpty ? "Not set" : text)
     }
 
-    private static let timeFormat: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "h:mm a"
-        return f
-    }()
-
-    /// Empty until set; then a native time picker plus a clear button.
-    @ViewBuilder private var timePicker: some View {
-        if let date = Self.timeFormat.date(from: trimmed(text)) {
-            DatePicker(info.title, selection: Binding(get: { date }, set: { set(Self.timeFormat.string(from: $0)) }),
-                       displayedComponents: .hourAndMinute)
-                .labelsHidden()
-                #if os(macOS)
-                .datePickerStyle(.stepperField)
-                #endif
-            Spacer(minLength: 4)
-            Button { set("") } label: {
-                Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
-            }
-            .buttonStyle(.plain).accessibilityLabel("Clear \(info.title.lowercased())")
-        } else {
-            Button {
-                let defaultTime = id == "bedtime" ? "11:00 PM" : "7:00 AM"
-                set(defaultTime)
-            } label: {
-                HStack {
-                    Text("Add").foregroundStyle(AboutYouContent.tint).fontWeight(.semibold)
-                    Spacer(minLength: 0)
-                }
-                .font(OrbitTheme.body).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Add \(info.title.lowercased()) time")
-        }
+    private func set(_ value: String) {
+        text = value
+        saveNow()
     }
 
     private func trimmed(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines) }
