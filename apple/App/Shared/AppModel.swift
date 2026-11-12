@@ -94,7 +94,12 @@ final class AppModel: NSObject, ObservableObject {
             configure(url: url, token: token)
             start()
         } catch {
-            banner = "Pairing failed: \(error.localizedDescription)"
+            if (error as? URLError)?.code == .networkConnectionLost {
+                // The server may have used the code before the connection dropped; codes are single-use.
+                banner = "The connection dropped while pairing. Tap Connect again; if it says the code was used, get a new code."
+            } else {
+                banner = "Pairing failed: \(error.localizedDescription)"
+            }
         }
     }
 

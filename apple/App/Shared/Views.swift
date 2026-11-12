@@ -431,7 +431,12 @@ struct ChatView: View {
                     .padding(.horizontal, 24).padding(.vertical, 20)
                 }
                 .defaultScrollAnchor(.bottom)
+                .keepsBottomOnResize()
                 .scrollDismissesKeyboard(.interactively)
+                .onChange(of: composerFocused) { _, focused in
+                    // Opening the keyboard or growing the composer shouldn't strand the user mid-history.
+                    if focused { withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) } }
+                }
                 .onChange(of: store.chat(conversationId).count) { _, _ in
                     withAnimation { proxy.scrollTo(store.chat(conversationId).last?.id, anchor: .bottom) }
                 }
@@ -611,6 +616,17 @@ struct ChatView: View {
         let prefix = selectedModel == "Auto" || hasOverride ? "" : "/\(selectedModel.lowercased()) "
         model.chatDraft = ""
         Task { await model.send(prefix + draft, in: conversationId) }
+    }
+}
+
+private extension View {
+    /// Keep the newest message pinned when the visible area shrinks (keyboard, multi-line composer).
+    @ViewBuilder func keepsBottomOnResize() -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            self.defaultScrollAnchor(.bottom, for: .sizeChanges)
+        } else {
+            self
+        }
     }
 }
 

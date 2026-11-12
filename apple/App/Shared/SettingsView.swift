@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 enum SettingsDestination: String, Hashable {
     case assistant = "Assistant", connections = "Connected apps", devices = "Devices", data = "Data & privacy"
-    case icloud = "iCloud Mail", github = "GitHub", slack = "Slack", canvas = "Canvas", mac = "Mac access"
+    case icloud = "iCloud Mail", github = "GitHub", canvas = "Canvas", mac = "Mac access"
 }
 
 @MainActor final class OrbitSettingsNavigation: ObservableObject {
@@ -122,7 +122,7 @@ struct SettingsView: View {
         case .devices: deviceSettings
         case .data: dataSettings
         case .icloud: iCloudSettings
-        case .github, .slack, .canvas: tokenSettings(destination)
+        case .github, .canvas: tokenSettings(destination)
         case .mac:
             #if os(macOS)
             macSettings
@@ -225,8 +225,6 @@ struct SettingsView: View {
                 Divider()
                 destinationRow(.github, icon: "chevron.left.forwardslash.chevron.right", subtitle: "Repositories")
                 Divider()
-                destinationRow(.slack, icon: "number", subtitle: "Workspace")
-                Divider()
                 destinationRow(.canvas, icon: "graduationcap", subtitle: "Courses")
             }
         }
@@ -260,8 +258,7 @@ struct SettingsView: View {
                 Task { await model.perform { try await $0.connectToken(provider: provider.rawValue.lowercased(), token: value, baseURL: base) } }
             }.buttonStyle(.borderedProminent).controlSize(.large).disabled(token.isEmpty || (provider == .canvas && canvasURL.isEmpty))
             DisclosureGroup("Where to find your token") {
-                Text(provider == .github ? "GitHub Settings → Developer settings → Fine-grained tokens." :
-                     provider == .slack ? "Use a user token from your Slack app." : "Canvas Account → Settings → New Access Token.")
+                Text(provider == .github ? "GitHub Settings → Developer settings → Fine-grained tokens." : "Canvas Account → Settings → New Access Token.")
                     .font(.caption).foregroundStyle(.secondary)
             }.font(.callout)
         }

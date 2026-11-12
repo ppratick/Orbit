@@ -6,7 +6,6 @@ import { firstAccount, mailAccount, MAIL_PROVIDERS } from "../connectors";
 import { listAccounts } from "../accounts";
 import { drive } from "../connectors/google";
 import { github } from "../connectors/github";
-import { slackApi } from "../connectors/slack";
 import { canvasApi } from "../connectors/canvas";
 import { readWebPage } from "../connectors/browser";
 import { untrusted } from "../untrusted";
@@ -39,6 +38,14 @@ const has = (p: string) => (t: ToolCtx) => t.providers.has(p);
 const hasMail = (t: ToolCtx) => [...t.providers].some((p) => MAIL_PROVIDERS[p]);
 const hasDevice = (...kinds: string[]) => (t: ToolCtx) => kinds.some((k) => t.deviceKinds.has(k));
 const out = (v: unknown) => truncate(JSON.stringify(v, null, 1), 14000);
+
+/** Human-readable local time for tool results, so replies never need to convert UTC/epoch timestamps. */
+export function localTime(env: Env, v: string | number | null | undefined): string | null {
+  if (v === null || v === undefined || v === "") return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-US", { timeZone: env.ORBIT_TIMEZONE, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(d);
+}
 
 function parseTime(v: string, field: string): number | null {
   if (!v) return null;
@@ -170,7 +177,7 @@ const TOOLS: Tool[] = [
   // ── Email ─────────────────────────────────────────────────────────────────
   {
     name: "list_accounts",
-    description: "List connected accounts (email, GitHub, Slack, Canvas) with ids and status.",
+    description: "List connected accounts (email, Google Drive, GitHub, Canvas) with ids and status.",
     properties: {},
     run: async (t) => out((await listAccounts(t.env)).map((a) => ({ id: a.id, provider: a.provider, label: a.label, identity: a.identity, status: a.status, error: a.last_error }))),
   },
@@ -183,7 +190,7 @@ const TOOLS: Tool[] = [
     run: async (t, a) => {
       const { acct, mail } = await mailAccount(t.env, str(a, "account_id") || null);
       const r = await mail.search(t.env, acct, str(a, "query"), Number(a.max) || 10);
-      return untrusted(`email-search:${acct.identity}`, out(r));
+      return untrusted(`email-search:${acct.identity}`, out(r.map((m) => ({ ...m, date_local: localTime(t.env, m.date) }))));
     },
   },
   {
@@ -195,7 +202,7 @@ const TOOLS: Tool[] = [
     run: async (t, a) => {
       const { acct, mail } = await mailAccount(t.env, str(a, "account_id") || null);
       const m = await mail.read(t.env, acct, str(a, "id"));
-      return untrusted(`email:${acct.identity}`, out({ ...m, body: truncate(m.body, 10000) }));
+      return untrusted(`email:${acct.identity}`, out({ ...m, date_local: localTime(t.env, m.date), body: truncate(m.body, 10000) }));
     },
   },
   {
@@ -276,13 +283,14 @@ const TOOLS: Tool[] = [
   // ── Google Drive ─────────────────────────────────────────────────────────
   {
     name: "drive_search",
-    description: "Full-text search Google Drive (including shared drives).",
-    properties: { query: S("Text to find"), account_id: S("Optional") },
-    required: ["query"],
+    description: "Search Google Drive (including shared drives) by text, ranked by relevance. Use an empty query to list the most recently modified files.",
+    properties: { query: S("Text to find; empty for most recently modified"), account_id: S("Optional") },
+    required: [],
     available: has("google"),
     run: async (t, a) => {
       const acct = await firstAccount(t.env, "google", str(a, "account_id") || null);
-      return untrusted("drive-search", out(await drive.search(t.env, acct, str(a, "query"))));
+      const files = await drive.search(t.env, acct, str(a, "query"));
+      return untrusted("drive-search", out(files.map((f) => ({ ...f, modified_local: localTime(t.env, f.modifiedTime) }))));
     },
   },
   {
@@ -300,14 +308,14 @@ const TOOLS: Tool[] = [
   // ── GitHub ───────────────────────────────────────────────────────────────
   {
     name: "github_notifications",
-    description: "List unread GitHub notifications.",
+    description: "Recent GitHub activity: unread notifications, or (if the token can't read notifications) open issues and PRs that involve the user or request their review.",
     properties: {},
     available: has("github"),
-    run: async (t) => untrusted("github", out(await github.notifications(t.env, await firstAccount(t.env, "github")))),
+    run: async (t) => untrusted("github", out(await github.activity(t.env, await firstAccount(t.env, "github")))),
   },
   {
     name: "github_search",
-    description: "Search GitHub issues and pull requests (GitHub search syntax, e.g. 'is:pr is:open review-requested:@me').",
+    description: "Search GitHub issues and pull requests (GitHub search syntax, e.g. 'is:pull-request is:open review-requested:@me'). Searches both kinds when the query names neither.",
     properties: { query: S("Query") },
     required: ["query"],
     available: has("github"),
@@ -353,38 +361,13 @@ const TOOLS: Tool[] = [
     available: has("github"),
     run: (t, a) => act(t, "github.merge_pr", { repo: str(a, "repo"), number: Number(a.number), method: str(a, "method") || "squash" }),
   },
-  // ── Slack ────────────────────────────────────────────────────────────────
-  {
-    name: "slack_search",
-    description: "Search Slack messages the user can see.",
-    properties: { query: S("Slack search query") },
-    required: ["query"],
-    available: has("slack"),
-    run: async (t, a) => untrusted("slack", out(await slackApi.search(t.env, await firstAccount(t.env, "slack"), str(a, "query")))),
-  },
-  {
-    name: "slack_read_channel",
-    description: "Read recent messages in a Slack channel or DM.",
-    properties: { channel_id: S("Channel id"), limit: N("≤50") },
-    required: ["channel_id"],
-    available: has("slack"),
-    run: async (t, a) => untrusted("slack", out(await slackApi.history(t.env, await firstAccount(t.env, "slack"), str(a, "channel_id"), Number(a.limit) || 20))),
-  },
-  {
-    name: "slack_send",
-    description: "Post a Slack message as the user (requires approval).",
-    properties: { channel: S("Channel id"), text: S("Message"), thread_ts: S("Optional thread") },
-    required: ["channel", "text"],
-    available: has("slack"),
-    run: (t, a) => act(t, "slack.send_message", { channel: str(a, "channel"), text: str(a, "text"), thread_ts: str(a, "thread_ts") }),
-  },
   // ── Canvas ───────────────────────────────────────────────────────────────
   {
     name: "canvas_upcoming",
     description: "Upcoming Canvas assignments and to-dos with due dates.",
     properties: {},
     available: has("canvas"),
-    run: async (t) => untrusted("canvas", out(await canvasApi.upcoming(t.env, await firstAccount(t.env, "canvas")))),
+    run: async (t) => untrusted("canvas", out((await canvasApi.upcoming(t.env, await firstAccount(t.env, "canvas"))).map((x) => ({ ...x, due_local: localTime(t.env, x.due_at) })))),
   },
   {
     name: "canvas_courses",
@@ -399,7 +382,7 @@ const TOOLS: Tool[] = [
     properties: { course_id: N("Course id") },
     required: ["course_id"],
     available: has("canvas"),
-    run: async (t, a) => untrusted("canvas", out(await canvasApi.assignments(t.env, await firstAccount(t.env, "canvas"), Number(a.course_id)))),
+    run: async (t, a) => untrusted("canvas", out((await canvasApi.assignments(t.env, await firstAccount(t.env, "canvas"), Number(a.course_id))).map((x) => ({ ...x, due_local: localTime(t.env, x.due_at) })))),
   },
   {
     name: "canvas_submit",

@@ -22,7 +22,7 @@ describe("policy (enforced outside the model)", () => {
     expect(ACTIONS["mac.read_file"].approval({ path: "/x" }, ctx)).toBeNull();
   });
   it("requires approval for sends, edits, deletes, submissions, merges and arbitrary commands", () => {
-    for (const a of ["email.send", "email.send_draft", "slack.send_message", "calendar.update_event", "calendar.delete_event", "canvas.submit", "github.merge_pr", "github.comment", "memory.delete", "shortcuts.run"]) {
+    for (const a of ["email.send", "email.send_draft", "calendar.update_event", "calendar.delete_event", "canvas.submit", "github.merge_pr", "github.comment", "memory.delete", "shortcuts.run"]) {
       expect(ACTIONS[a].approval({}, ctx), a).not.toBeNull();
     }
     expect(ACTIONS["calendar.create_event"].approval({ calendar: "Work" }, ctx)).not.toBeNull();
@@ -33,7 +33,7 @@ describe("policy (enforced outside the model)", () => {
   });
   it("never auto-retries non-idempotent sends", () => {
     expect(ACTIONS["email.send"].retrySafe).toBe(false);
-    expect(ACTIONS["slack.send_message"].retrySafe).toBe(false);
+    expect(ACTIONS["github.comment"].retrySafe).toBe(false);
   });
   it("routes targets to device kinds", () => {
     expect(targetMatchesDevice("apple", "iphone")).toBe(true);

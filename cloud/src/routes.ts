@@ -13,7 +13,6 @@ import { googleAuthUrl } from "./connectors/google";
 import { importCredentials, modelCatalog, signInConfig, signOut } from "./agent/llmauth";
 import { icloudMail } from "./connectors/icloud";
 import { github } from "./connectors/github";
-import { slackApi } from "./connectors/slack";
 import { canvasApi } from "./connectors/canvas";
 import { untrusted } from "./untrusted";
 import { newId, now, parseJson, truncate } from "./util";
@@ -384,10 +383,6 @@ async function tokenAccount(c: Ctx, provider: string, r: Request, verify: (acct:
   return json({ id, identity }, 201);
 }
 router.on("POST", "/v1/accounts/github", async (r, _p, c) => tokenAccount(c, "github", r, async (a) => (await github.verify(c.env, a as never)).login));
-router.on("POST", "/v1/accounts/slack", async (r, _p, c) => tokenAccount(c, "slack", r, async (a) => {
-  const v = await slackApi.verify(c.env, a as never);
-  return `${v.user}@${v.team}`;
-}));
 router.on("POST", "/v1/accounts/canvas", async (r, _p, c) => {
   const b = (await r.clone().json().catch(() => ({}))) as { base_url?: string };
   const base = str(b.base_url, "base_url", { max: 200 });

@@ -28,4 +28,4 @@ npm run db:migrate:local
 npm run dev
 ```
 
-Nothing has been deployed. Deploying (`npm run deploy`) needs your Cloudflare login and is your call.
+The backend is deployed at `https://orbit.mmkjp6pw26.workers.dev` (Cloudflare Workers Free). Redeploy with `npm run deploy` from `cloud/`.

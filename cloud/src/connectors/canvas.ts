@@ -13,7 +13,7 @@ async function canvas<T>(env: Env, acct: AccountRow, path: string, init: Request
   if (!base) throw new Error("Canvas base_url is not configured for this account");
   const r = await fetch(`${base.replace(/\/$/, "")}/api/v1${path}`, {
     ...init,
-    headers: { authorization: `Bearer ${token}`, accept: "application/json", ...(init.body ? { "content-type": "application/json" } : {}) },
+    headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": "Orbit/0.1", ...(init.body ? { "content-type": "application/json" } : {}) },
   });
   if (!r.ok) throw new Error(`Canvas ${r.status}: ${(await r.text()).slice(0, 300)}`);
   return (await r.json()) as T;

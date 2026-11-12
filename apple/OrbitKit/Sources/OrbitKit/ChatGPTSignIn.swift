@@ -163,7 +163,7 @@ public final class ChatGPTSignIn: NSObject {
             "grant_type": "authorization_code", "client_id": clientId, "code": code,
             "code_verifier": verifier, "redirect_uri": redirectURI, "resource": config.resource,
         ])
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await Transport.data(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
             throw SignInError.exchange(String(decoding: data.prefix(300), as: UTF8.self))
         }

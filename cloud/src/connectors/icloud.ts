@@ -157,16 +157,72 @@ function summariesFromFetch(untagged: { text: string; literals: string[] }[]): M
   return out.sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
 }
 
+/**
+ * Translate the Gmail-style query the assistant tends to write ("in:inbox from:x is:unread newer_than:3d
+ * rent") into an IMAP mailbox + SEARCH criteria. Unknown operators are ignored rather than searched literally.
+ */
+export function imapQuery(query: string, nowMs = Date.now()): { mailbox: string; criteria: string } {
+  let mailbox = "INBOX";
+  const crit: string[] = [];
+  const text: string[] = [];
+  const tokens = query.match(/(?:[^\s"]+:"[^"]*"|"[^"]*"|\S+)/g) ?? [];
+  const days = (v: string) => {
+    const m = v.match(/^(\d+)([dmy])$/i);
+    if (!m) return null;
+    const n = Number(m[1]) * (m[2].toLowerCase() === "d" ? 1 : m[2].toLowerCase() === "m" ? 30 : 365);
+    return imapDate(new Date(nowMs - n * 864e5));
+  };
+  const date = (v: string) => {
+    const t = Date.parse(v.replace(/\//g, "-"));
+    return Number.isNaN(t) ? null : imapDate(new Date(t));
+  };
+  for (const raw of tokens) {
+    const m = raw.match(/^(-?)([a-z_]+):(.*)$/i);
+    if (!m) {
+      text.push(raw.replace(/^"|"$/g, ""));
+      continue;
+    }
+    const [, neg, op, valRaw] = m;
+    const val = valRaw.replace(/^"|"$/g, "");
+    let c: string | null = null;
+    switch (op.toLowerCase()) {
+      case "in":
+        if (/^(sent)$/i.test(val)) mailbox = "Sent Messages";
+        else if (/^drafts?$/i.test(val)) mailbox = "Drafts";
+        else if (/^(archive)$/i.test(val)) mailbox = "Archive";
+        break; // inbox / anywhere → INBOX
+      case "from": c = `FROM ${q(val)}`; break;
+      case "to": c = `TO ${q(val)}`; break;
+      case "cc": c = `CC ${q(val)}`; break;
+      case "subject": c = `SUBJECT ${q(val)}`; break;
+      case "is":
+        c = /^unread$/i.test(val) ? "UNSEEN" : /^read$/i.test(val) ? "SEEN" : /^(starred|flagged)$/i.test(val) ? "FLAGGED" : null;
+        break;
+      case "newer_than": { const d = days(val); c = d ? `SINCE ${d}` : null; break; }
+      case "older_than": { const d = days(val); c = d ? `BEFORE ${d}` : null; break; }
+      case "after": { const d = date(val); c = d ? `SINCE ${d}` : null; break; }
+      case "before": { const d = date(val); c = d ? `BEFORE ${d}` : null; break; }
+      default: break; // label:, category:, has:… have no IMAP equivalent here
+    }
+    if (c) crit.push(neg ? `NOT ${c}` : c);
+  }
+  const words = text.join(" ").trim();
+  if (words) crit.push(`TEXT ${q(words)}`);
+  return { mailbox, criteria: crit.length ? crit.join(" ") : "ALL" };
+}
+
 const HEADER_FETCH = "(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])";
 
 export const icloudMail = {
   async search(env: Env, acct: AccountRow, query: string, max = 10): Promise<MailSummary[]> {
     return withSession(env, acct, async (s) => {
-      await s.cmd("EXAMINE INBOX"); // read-only: never changes \Seen flags
-      const crit = query.trim() ? `OR SUBJECT ${q(query)} FROM ${q(query)}` : `SINCE ${imapDate(new Date(Date.now() - 7 * 864e5))}`;
-      const uids = parseSearch((await s.cmd(`UID SEARCH CHARSET UTF-8 ${crit}`)).untagged).slice(-Math.min(max, 25));
+      const { mailbox, criteria } = imapQuery(query);
+      await s.cmd(`EXAMINE ${q(mailbox)}`); // read-only: never changes \Seen flags
+      const uids = parseSearch((await s.cmd(`UID SEARCH CHARSET UTF-8 ${criteria}`)).untagged).slice(-Math.min(max, 25));
       if (!uids.length) return [];
-      return summariesFromFetch((await s.cmd(`UID FETCH ${uids.join(",")} ${HEADER_FETCH}`)).untagged);
+      const found = summariesFromFetch((await s.cmd(`UID FETCH ${uids.join(",")} ${HEADER_FETCH}`)).untagged);
+      // UIDs are per mailbox: prefix non-inbox ids so read() opens the right one.
+      return mailbox === "INBOX" ? found : found.map((m) => ({ ...m, id: `${mailbox}|${m.id}` }));
     });
   },
 
@@ -179,17 +235,18 @@ export const icloudMail = {
     });
   },
 
-  async read(env: Env, acct: AccountRow, uid: string): Promise<MailMessage> {
-    if (!/^\d+$/.test(uid)) throw new Error("iCloud message ids are numeric UIDs");
+  async read(env: Env, acct: AccountRow, id: string): Promise<MailMessage> {
+    const [mailbox, uid] = id.includes("|") ? [id.slice(0, id.lastIndexOf("|")), id.slice(id.lastIndexOf("|") + 1)] : ["INBOX", id];
+    if (!/^\d+$/.test(uid) || !/^[\w .-]{1,60}$/.test(mailbox)) throw new Error("Unrecognised iCloud message id");
     return withSession(env, acct, async (s) => {
-      await s.cmd("EXAMINE INBOX");
+      await s.cmd(`EXAMINE ${q(mailbox)}`);
       const r = await s.cmd(`UID FETCH ${uid} (UID FLAGS BODY.PEEK[]<0.200000>)`);
       const u = r.untagged.find((x) => /^\* \d+ FETCH/.test(x.text) && x.literals[0]);
       if (!u) throw new Error(`Message ${uid} not found`);
       const raw = u.literals[0];
       const { headers } = splitHeaderBody(raw);
       return {
-        id: uid,
+        id,
         from: decodeWords(headers["from"] ?? ""),
         to: decodeWords(headers["to"] ?? ""),
         cc: decodeWords(headers["cc"] ?? ""),

@@ -1,10 +1,10 @@
 # Architecture
 
 ```
- iPhone app ─┐                         ┌─ OpenAI Responses API (ChatGPT sign-in token, or API key)
+ iPhone app ─┐                         ┌─ OpenAI Responses API (Sign in with ChatGPT token)
              ├─ HTTPS (device token) ─▶│  Cloudflare Worker ──▶ D1 (source of truth)
  Mac app ────┘    sync / chat /        │   ├─ agent loop + tools ──▶ policy engine ──▶ task queue
- (menu-bar        approvals /          │   ├─ connectors: Gmail, Drive, iCloud IMAP, GitHub, Slack, Canvas, web
+ (menu-bar        approvals /          │   ├─ connectors: Gmail, Drive, iCloud IMAP, GitHub, Canvas, web
   companion)      device tasks         │   └─ cron every 10 min → heartbeat phases (email · responsibilities · briefing)
 ```
 
@@ -30,7 +30,7 @@ can be read offline.
 - They are decrypted only inside connector calls, and are never returned by the API or placed in prompts.
 - Devices hold only their own device token, in the Keychain.
 
-**Untrusted content.** Email, web, Slack, Canvas, Drive and device output is wrapped in `<untrusted>` fences, and the
+**Untrusted content.** Email, web, GitHub, Canvas, Drive and device output is wrapped in `<untrusted>` fences, and the
 system prompt tells the model to treat it as data. This is defence in depth only. The real protection is that
 anything consequential still needs an approval the model cannot grant.
 

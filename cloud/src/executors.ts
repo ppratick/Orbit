@@ -1,7 +1,6 @@
 import type { Env } from "./env";
 import { firstAccount, mailAccount } from "./connectors";
 import { github } from "./connectors/github";
-import { slackApi } from "./connectors/slack";
 import { canvasApi } from "./connectors/canvas";
 import { now } from "./util";
 
@@ -28,10 +27,6 @@ const EXECUTORS: Record<string, (env: Env, p: P) => Promise<unknown>> = {
     const { acct, mail } = await mailAccount(env, s(p, "account_id") || null);
     if (!mail.sendDraft) throw new Error(`Sending drafts is not supported yet for ${acct.provider}.`);
     return mail.sendDraft(env, acct, s(p, "draft_id"));
-  },
-  async "slack.send_message"(env, p) {
-    const a = await firstAccount(env, "slack", s(p, "account_id") || null);
-    return slackApi.postMessage(env, a, s(p, "channel"), s(p, "text"), s(p, "thread_ts") || undefined);
   },
   async "github.comment"(env, p) {
     const a = await firstAccount(env, "github", s(p, "account_id") || null);

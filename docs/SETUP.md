@@ -1,6 +1,8 @@
 # Setup
 
-Every step here is something only you can do: logins, consoles, credentials. Nothing has been deployed or connected for you.
+Every step here is something only you can do: logins, consoles, credentials.
+
+Current deployment (2026-11-12): the Worker runs at `https://orbit.mmkjp6pw26.workers.dev` on Cloudflare Workers Free with D1. Google OAuth is configured. Connected accounts: personal Gmail and CMU Gmail (each with Drive), iCloud Mail, GitHub and Canvas. Your Mac, your iPhone and the iPhone Simulator are paired. The steps below are for rebuilding from scratch.
 
 ## 1. Cloudflare (Workers Free + D1)
 
@@ -19,11 +21,9 @@ Set secrets with `npx wrangler secret put NAME`. Each command prompts for the va
 | `ENCRYPTION_KEY` | Output of `openssl rand -base64 32`. Encrypts stored account credentials. Back it up: if it's lost, every account must be reconnected. |
 | `PUBLIC_BASE_URL` | `https://orbit.<your-subdomain>.workers.dev`, shown after the first deploy. Set it and deploy again. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | See section 3. |
-| `OPENAI_API_KEY` | Leave unset. The paid API fallback is disabled; it would only be used if `OPENAI_AUTH_MODE` were changed. |
 
 Deploy with `npm run deploy`. Non-secret settings live under `vars` in `wrangler.jsonc`:
 - `OPENAI_MODEL_BASIC` (`gpt-6-luna`) and `OPENAI_MODEL_ADVANCED` (`gpt-6.1-sol`). Both were confirmed in your account's model list on 2026-11-11.
-- `OPENAI_AUTH_MODE`
 - `ORBIT_TIMEZONE`
 - `ORBIT_CALENDAR_NAME`
 
@@ -45,7 +45,7 @@ In the Mac or iPhone app, go to **Settings → AI model → Continue with ChatGP
 3. The app exchanges the code and hands the credentials to the Worker. The Worker validates the ID token against OpenAI's published keys and checks the `chatgpt.tokens.use.direct` scope. From then on, only the Worker refreshes the tokens.
 4. **Verify model IDs** checks Luna and Sol against your account's model list.
 
-Plan usage is shared with your other apps under ChatGPT's five-hour limit; see ChatGPT Settings → Usage. When the limit is hit, Orbit says so and doesn't switch to the paid API. `OPENAI_AUTH_MODE` stays `chatgpt`. Signing out revokes the session but keeps the client registration, so the next sign-in is quick.
+Plan usage is shared with your other apps under ChatGPT's five-hour limit; see ChatGPT Settings → Usage. When the limit is hit, Orbit says so. There is no paid API fallback. Signing out revokes the session but keeps the client registration, so the next sign-in is quick.
 
 OpenAI's docs describe this flow for open-source and self-hosted apps. Whether a Worker on your own Cloudflare account counts as self-hosted is not confirmed; see STATUS.md.
 
@@ -66,6 +66,7 @@ OpenAI's docs describe this flow for open-source and self-hosted apps. Whether a
    - `openid`
    - `email`
 5. Under **Clients**, create an OAuth client of type **Web application** with redirect URI `https://<worker>/oauth/google/callback`.
+   - Branding links: the Worker serves the home page `https://<worker>/about`, the privacy policy `/privacy` and the terms `/terms`.
 6. Set the `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` secrets.
 7. In the app, open **Settings → Connect a Google account**. Repeat for each Gmail account; each becomes its own account row.
 
@@ -78,13 +79,11 @@ All are added in **Settings** in the app. Credentials go to the Worker once and 
 - **iCloud Mail:**
   1. Go to appleid.apple.com → Sign-In and Security → App-Specific Passwords.
   2. In Orbit, enter your full iCloud address and that password. Orbit verifies them with an IMAP login (`imap.mail.me.com:993`).
-- **GitHub:** a fine-grained personal access token.
-  - Read-only for reading: Issues, Pull requests, Contents, Notifications.
+- **GitHub:** a fine-grained personal access token with read access to Issues, Pull requests and Contents.
+  - GitHub's notifications inbox doesn't accept fine-grained tokens, so Orbit shows open issues and pull requests that involve you or request your review instead.
+  - Fine-grained tokens only see the repositories you select when creating them. To let Orbit read a private repo such as `ppratick/Orbit`, add it to the token.
   - Add write access only if you want approved comments and merges to work.
-- **Slack:** create your own Slack app, then install it to your workspace and use its **user** token (`xoxp-`).
-  - User scopes: `search:read`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `channels:read`, `users:read`.
-  - Add `chat:write` only if you want approved sends.
-- **Canvas:** in Canvas, go to Account → Settings → New Access Token. Enter your school's base URL, for example `https://school.instructure.com`.
+- **Canvas:** in Canvas, go to Account → Settings → New Access Token. Enter your school's base URL, for example `https://canvas.cmu.edu`.
 - **Browser Run (optional):** a Cloudflare API token with Browser Rendering/Run permission, set as `CF_BROWSER_TOKEN` and `CF_ACCOUNT_ID`.
   - Free tier: about 10 browser minutes/day.
   - Used only when the model asks to render a JavaScript-heavy page; plain fetch is the default.
@@ -104,7 +103,8 @@ cd apple && xcodegen && open Orbit.xcodeproj
    1. Enable Developer Mode on the phone.
    2. Run the `Orbit-iOS` scheme on your device.
    3. Trust the developer certificate under Settings → General → VPN & Device Management.
-6. **Pair:** on the first device, enter the Worker URL and the admin token. On the other device, use **Settings → Pair another device** to get a one-time code.
+6. **Pair:** on the first device, enter the Worker URL and use *First device setup* with the admin token. On other devices, get a one-time code from **Settings → Devices → Pair a device** on a paired device. Codes expire after 10 minutes and work once.
+   - If pairing reports a dropped connection, tap Connect again. If the code is then rejected as used, the first attempt went through anyway, so get a new code. The apps switch from HTTP/3 to TCP after such a failure.
 7. Grant Calendar, Reminders and Notifications access when asked.
 
 Free Personal Team limits (Apple's membership comparison page):

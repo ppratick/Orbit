@@ -113,3 +113,18 @@ final class PlainTextTests: XCTestCase {
         XCTAssertEqual(String(a.characters), "Syllabus: https://canvas.example.edu/s")
     }
 }
+
+final class TransportTests: XCTestCase {
+    func testOnlyIdempotentRequestsAreRetried() {
+        var r = URLRequest(url: URL(string: "https://example.com")!)
+        XCTAssertTrue(Transport.isIdempotent(r))
+        r.httpMethod = "PUT"; XCTAssertTrue(Transport.isIdempotent(r))
+        r.httpMethod = "POST"; XCTAssertFalse(Transport.isIdempotent(r), "pairing/chat POSTs must never be resent automatically")
+    }
+
+    func testClassifiesQUICLossAsTransportFailure() {
+        XCTAssertTrue(Transport.isTransportFailure(URLError(.networkConnectionLost)))
+        XCTAssertFalse(Transport.isTransportFailure(URLError(.notConnectedToInternet)))
+        XCTAssertFalse(Transport.isTransportFailure(APIError(status: 400, code: "bad_code", message: "x")))
+    }
+}

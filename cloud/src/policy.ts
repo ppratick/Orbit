@@ -79,12 +79,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
     summarize: (p) => `Mark reminder ${s(p.reminder_id)} complete`,
   },
   // ── Messaging / code / coursework ────────────────────────────────────────
-  "slack.send_message": {
-    target: "cloud",
-    approval: always("Sending a message"),
-    retrySafe: false,
-    summarize: (p) => `Post to Slack ${s(p.channel)}: "${s(p.text).slice(0, 80)}"`,
-  },
   "github.comment": {
     target: "cloud",
     approval: always("Posting on GitHub"),

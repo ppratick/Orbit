@@ -1,3 +1,4 @@
+import { publicPage } from "./public-pages";
 import type { Env } from "./env";
 import { HttpError, json } from "./http";
 import { handleAuthed, redeem } from "./routes";
@@ -18,6 +19,10 @@ export default {
   async fetch(req: Request, env: Env, exec: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     try {
+      if (req.method === "GET" || req.method === "HEAD") {
+        const info = publicPage(url.pathname);
+        if (info) return req.method === "HEAD" ? new Response(null, { headers: info.headers }) : info;
+      }
       if (url.pathname === "/" || url.pathname === "/health") return json({ name: "orbit", version: VERSION, ok: true });
       if (url.pathname === "/oauth/google/callback" && req.method === "GET") {
         try {

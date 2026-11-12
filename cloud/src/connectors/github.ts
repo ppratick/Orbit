@@ -18,8 +18,21 @@ async function gh<T>(env: Env, acct: AccountRow, path: string, init: RequestInit
       ...(init.body ? { "content-type": "application/json" } : {}),
     },
   });
+  if (r.status === 404 && /^\/repos\//.test(path)) {
+    throw new Error("GitHub 404: not found, or the connected token can't see this repository (fine-grained tokens only cover the repositories selected when the token was created)");
+  }
   if (!r.ok) throw new Error(`GitHub ${r.status}: ${(await r.text()).slice(0, 300)}`);
   return (r.status === 204 ? null : await r.json()) as T;
+}
+
+export interface IssueHit {
+  repo: string;
+  number: number;
+  title: string;
+  state: string;
+  kind: "pr" | "issue";
+  url: string;
+  updated_at: string;
 }
 
 const repoRe = /^[\w.-]+\/[\w.-]+$/;
@@ -40,7 +53,43 @@ export const github = {
     return n.map((x) => ({ repo: x.repository.full_name, title: x.subject.title, type: x.subject.type, reason: x.reason, updated_at: x.updated_at }));
   },
 
-  async searchIssues(env: Env, acct: AccountRow, query: string) {
+  /**
+   * Notifications inbox, falling back to issue/PR search when the token can't read notifications.
+   * GitHub's notifications API rejects fine-grained personal access tokens (403), so for those we show
+   * open issues and pull requests that involve the user or request their review instead.
+   */
+  async activity(env: Env, acct: AccountRow) {
+    try {
+      return { source: "notifications", items: await github.notifications(env, acct) };
+    } catch (e) {
+      if (!String(e instanceof Error ? e.message : e).includes("GitHub 403")) throw e;
+      // GitHub search now requires an explicit is:issue or is:pull-request qualifier.
+      const [reviews, prs, issues] = await Promise.all([
+        github.searchIssues(env, acct, "is:pull-request is:open review-requested:@me sort:updated-desc"),
+        github.searchIssues(env, acct, "is:pull-request is:open involves:@me sort:updated-desc"),
+        github.searchIssues(env, acct, "is:issue is:open involves:@me sort:updated-desc"),
+      ]);
+      const involved = [...prs, ...issues];
+      const seen = new Set<string>();
+      const items = [...reviews.map((i) => ({ ...i, reason: "review requested" })), ...involved.map((i) => ({ ...i, reason: "involves you" }))].filter((i) => {
+        const k = `${i.repo}#${i.number}`;
+        return seen.has(k) ? false : (seen.add(k), true);
+      });
+      return {
+        source: "search",
+        note: "This GitHub token can't read the notifications inbox (fine-grained tokens aren't supported there), so these are open issues and pull requests that involve the user or request their review.",
+        items,
+      };
+    }
+  },
+
+  async searchIssues(env: Env, acct: AccountRow, rawQuery: string): Promise<IssueHit[]> {
+    // GitHub's issue search rejects queries without is:issue / is:pull-request (HTTP 422); search both by default.
+    const query = /\b(is|type):(issue|pr|pull-request)\b/i.test(rawQuery) ? rawQuery : null;
+    if (!query) {
+      const [a, b] = await Promise.all([github.searchIssues(env, acct, `${rawQuery} is:issue`), github.searchIssues(env, acct, `${rawQuery} is:pull-request`)]);
+      return [...a, ...b].sort((x, y) => y.updated_at.localeCompare(x.updated_at));
+    }
     const r = await gh<{ items: { number: number; title: string; state: string; html_url: string; repository_url: string; updated_at: string; pull_request?: unknown }[] }>(
       env,
       acct,
@@ -51,7 +100,7 @@ export const github = {
       number: i.number,
       title: i.title,
       state: i.state,
-      kind: i.pull_request ? "pr" : "issue",
+      kind: (i.pull_request ? "pr" : "issue") as IssueHit["kind"],
       url: i.html_url,
       updated_at: i.updated_at,
     }));

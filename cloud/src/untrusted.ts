@@ -1,5 +1,5 @@
 /**
- * External content (email, web pages, Slack, Canvas, files) is data, not instructions.
+ * External content (email, web pages, Canvas, GitHub, files) is data, not instructions.
  * It is fenced before entering model context, and fences inside the content are neutralised
  * so the content cannot "close" the block. Fencing is defence in depth: the real protection
  * is that every consequential action is gated by policy.ts outside the model.

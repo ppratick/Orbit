@@ -217,8 +217,13 @@ export const gmail = {
 };
 
 export const drive = {
+  /**
+   * Full-text search (ranked by relevance), or, with an empty query, the most recently modified files.
+   * Drive doesn't allow orderBy together with fullText terms, so recency only applies to the empty query.
+   */
   async search(env: Env, acct: AccountRow, query: string, max = 10) {
-    const q = `fullText contains '${query.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}' and trashed = false`;
+    const text = query.trim();
+    const q = text ? `fullText contains '${text.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}' and trashed = false` : "trashed = false";
     const r = await gapi<{ files: { id: string; name: string; mimeType: string; modifiedTime: string; webViewLink: string }[] }>(
       env,
       acct,
@@ -229,6 +234,7 @@ export const drive = {
         includeItemsFromAllDrives: "true",
         supportsAllDrives: "true",
         corpora: "allDrives",
+        ...(text ? {} : { orderBy: "modifiedTime desc" }),
       })}`,
     );
     return r.files;

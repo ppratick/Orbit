@@ -33,7 +33,7 @@ public final class APIClient: @unchecked Sendable {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONEncoder.orbit.encode(AnyEncodable(body))
         }
-        let (data, resp) = try await session.data(for: req)
+        let (data, resp) = try await Transport.data(for: req, session: session)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             if let e = try? JSONDecoder.orbit.decode(ErrorBody.self, from: data) {
@@ -55,7 +55,7 @@ public final class APIClient: @unchecked Sendable {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder.orbit.encode(["code": code, "name": name, "kind": kind])
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await Transport.data(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 201 else {
             throw APIError(status: (resp as? HTTPURLResponse)?.statusCode ?? 0, code: "pair", message: String(decoding: data.prefix(300), as: UTF8.self))
         }
@@ -221,7 +221,8 @@ public final class APIClient: @unchecked Sendable {
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     req.httpBody = try JSONEncoder.orbit.encode(B(content: content, clientMsgId: clientMessageId))
-                    let (bytes, resp) = try await session.bytes(for: req)
+                    let (bytes, resp, keepAlive) = try await Transport.bytes(for: req, session: session)
+                    defer { keepAlive?.finishTasksAndInvalidate() }
                     let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
                     guard (200..<300).contains(status) else {
                         var body = Data()
