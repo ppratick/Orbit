@@ -24,6 +24,8 @@ export interface Env {
   APNS_TEAM_ID?: string;
   APNS_TOPIC?: string;
   CF_ACCOUNT_ID?: string;
+  /** Contact address shown on the public privacy page (optional). */
+  CONTACT_EMAIL?: string;
   CF_BROWSER_TOKEN?: string;
   NTFY_TOPIC_URL?: string; // optional fallback push channel
 }

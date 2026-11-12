@@ -23,7 +23,7 @@ export default {
     const url = new URL(req.url);
     try {
       if (req.method === "GET" || req.method === "HEAD") {
-        const info = publicPage(url.pathname);
+        const info = publicPage(url.pathname, env.CONTACT_EMAIL);
         if (info) return req.method === "HEAD" ? new Response(null, { headers: info.headers }) : info;
       }
       if (url.pathname === "/" || url.pathname === "/health") return json({ name: "orbit", version: VERSION, ok: true });

@@ -5,7 +5,7 @@
              ├─ HTTPS (device token) ─▶│  Cloudflare Worker ──▶ D1 (source of truth)
  Mac app ────┘    sync / chat /        │   ├─ agent loop + tools ──▶ policy engine ──▶ task queue
  (menu-bar        approvals /          │   ├─ connectors: Gmail, Drive, iCloud IMAP, GitHub, Canvas, web
-  companion)      device tasks         │   └─ cron every 10 min → heartbeat phases (email · responsibilities · briefing)
+  companion)      device tasks         │   └─ cron: source polling every 10 min · due schedules every minute
 ```
 
 ## Core ideas
@@ -53,6 +53,6 @@ anything consequential still needs an approval the model cannot grant.
 
 **Free-plan budget.**
 - Workers Free allows 50 D1 queries and about 10 ms CPU per invocation.
-- The cron therefore fires every 10 minutes and rotates three phases, so each runs about every 30 minutes.
+- Source polling therefore runs every 10 minutes in independent invocations, and due schedules and goal checks are dispatched every minute.
 - A query-budget wrapper (`budget.ts`) stops a run before the limit.
 - Chat turns buffer their writes and flush them in one batch.

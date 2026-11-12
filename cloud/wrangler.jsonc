@@ -1,7 +1,8 @@
+// Template config. Copy to wrangler.local.jsonc (gitignored), add your account_id and the
+// database_id from `wrangler d1 create orbit`; deploy and remote migrations use that file.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "orbit",
-  "account_id": "9825d44dc1fece5fca3cc36e35403660",
   "workers_dev": true,
   "preview_urls": false,
   "main": "src/index.ts",
@@ -16,7 +17,7 @@
     {
       "binding": "DB",
       "database_name": "orbit",
-      "database_id": "8bc78c09-f493-41c1-9446-db058120c68b",
+      "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
   ],

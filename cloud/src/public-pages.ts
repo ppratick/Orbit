@@ -6,7 +6,7 @@ const pages: Record<string, { title: string; body: string }> = {
   },
   "/privacy": {
     title: "Orbit privacy policy",
-    body: `<p>Orbit is operated for its owner's personal use. This policy describes the current assistant and its Google integration.</p><h2>Data accessed and used</h2><p>With account authorization, Orbit accesses the connected account's email address, Gmail messages and drafts, and Google Drive files. It uses this data to provide email and file search, summaries, drafts, approved sends, reminders and briefings requested or configured by the owner.</p><h2>Storage and processing</h2><p>Connected-account credentials are encrypted in the owner's Cloudflare database. Chat history, saved memory and related assistant records are stored in that database and cached on paired devices. Relevant content may be sent to OpenAI to generate responses and perform assistant tasks. Cloudflare processes requests and operational logs as the hosting provider.</p><h2>Sharing</h2><p>Orbit does not sell Google user data or use it for advertising. Data is processed through the services needed to provide the assistant, or sent to a recipient when the owner authorizes an action. Private account data is not published on these pages.</p><h2>Control and retention</h2><p>The owner can revoke Google access in Google Account settings or disconnect an account in Orbit. Disconnecting clears its stored connector credentials. Chat, memory and activity records may remain afterward; the owner manages their retention in the self-hosted database. Device credentials can also be revoked in Orbit.</p><h2>Contact</h2><p>Questions about this personal application can be sent to <a href="mailto:ppratickkafley2@gmail.com">ppratickkafley2@gmail.com</a>.</p>`,
+    body: `<p>Orbit is operated for its owner's personal use. This policy describes the current assistant and its Google integration.</p><h2>Data accessed and used</h2><p>With account authorization, Orbit accesses the connected account's email address, Gmail messages and drafts, and Google Drive files. It uses this data to provide email and file search, summaries, drafts, approved sends, reminders and briefings requested or configured by the owner.</p><h2>Storage and processing</h2><p>Connected-account credentials are encrypted in the owner's Cloudflare database. Chat history, saved memory and related assistant records are stored in that database and cached on paired devices. Relevant content may be sent to OpenAI to generate responses and perform assistant tasks. Cloudflare processes requests and operational logs as the hosting provider.</p><h2>Sharing</h2><p>Orbit does not sell Google user data or use it for advertising. Data is processed through the services needed to provide the assistant, or sent to a recipient when the owner authorizes an action. Private account data is not published on these pages.</p><h2>Control and retention</h2><p>The owner can revoke Google access in Google Account settings or disconnect an account in Orbit. Disconnecting clears its stored connector credentials. Chat, memory and activity records may remain afterward; the owner manages their retention in the self-hosted database. Device credentials can also be revoked in Orbit.</p><h2>Contact</h2><p>Questions about this personal application can be sent to {{CONTACT}}.</p>`,
   },
   "/terms": {
     title: "Orbit personal-use terms",
@@ -14,9 +14,14 @@ const pages: Record<string, { title: string; body: string }> = {
   },
 };
 
-export function publicPage(path: string): Response | null {
-  const page = pages[path];
-  if (!page) return null;
+const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** `contact` comes from the CONTACT_EMAIL variable so no personal address lives in the source. */
+export function publicPage(path: string, contact?: string): Response | null {
+  const found = pages[path];
+  if (!found) return null;
+  const email = contact?.trim();
+  const page = { ...found, body: found.body.replaceAll("{{CONTACT}}", email ? `<a href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>` : "the operator of this deployment") };
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${page.title}</title><style>:root{color-scheme:light dark}body{font:17px/1.65 system-ui,-apple-system,sans-serif;max-width:44rem;margin:3rem auto;padding:0 1.4rem}nav{display:flex;gap:1.2rem;flex-wrap:wrap;font-size:15px}a{color:inherit;text-underline-offset:4px}h1{font-size:2rem;line-height:1.2;margin-top:2rem}h2{font-size:1.15rem;margin-top:2rem}footer{margin-top:3rem;opacity:.65;font-size:14px}</style></head><body><nav><a href="/about">Orbit</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav><main><h1>${page.title}</h1>${page.body}</main><footer>Personal application · Updated November 12, 2026</footer></body></html>`, {
     headers: {
       "content-type": "text/html; charset=utf-8",

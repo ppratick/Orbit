@@ -6,6 +6,7 @@ dist/
 .dev.vars
 .dev.vars.*
 *.p8
+cloud/wrangler.local.jsonc
 # Apple
 apple/*.xcodeproj/
 apple/build/

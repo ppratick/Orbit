@@ -2,16 +2,19 @@
 
 Every step here is something only you can do: logins, consoles, credentials.
 
-Current deployment (2026-11-12): the Worker runs at `https://orbit.mmkjp6pw26.workers.dev` on Cloudflare Workers Free with D1. Google OAuth is configured. Connected accounts: personal Gmail and CMU Gmail (each with Drive), iCloud Mail, GitHub and Canvas. Your Mac, your iPhone and the iPhone Simulator are paired. The steps below are for rebuilding from scratch.
+Orbit is designed to run entirely on free tiers: Cloudflare Workers Free + D1 for the backend, a ChatGPT plan for the model, and a free Apple Personal Team for the apps.
 
 ## 1. Cloudflare (Workers Free + D1)
 
 ```bash
 cd cloud && npm install
 npx wrangler login
-npx wrangler d1 create orbit          # paste the printed database_id into wrangler.jsonc
+cp wrangler.jsonc wrangler.local.jsonc  # gitignored; holds your account's IDs
+npx wrangler d1 create orbit          # paste the printed database_id (and your account_id) into wrangler.local.jsonc
 npm run db:migrate:remote
 ```
+
+Optionally add `"CONTACT_EMAIL": "you@example.com"` under `vars` in `wrangler.local.jsonc`; it is shown on the public privacy page that Google's consent screen links to.
 
 Set secrets with `npx wrangler secret put NAME`. Each command prompts for the value.
 
@@ -23,7 +26,7 @@ Set secrets with `npx wrangler secret put NAME`. Each command prompts for the va
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | See section 3. |
 
 Deploy with `npm run deploy`. Non-secret settings live under `vars` in `wrangler.jsonc`:
-- `OPENAI_MODEL_BASIC` (`gpt-6-luna`) and `OPENAI_MODEL_ADVANCED` (`gpt-6.1-sol`). Both were confirmed in your account's model list on 2026-11-11.
+- `OPENAI_MODEL_BASIC` (`gpt-6-luna`) and `OPENAI_MODEL_ADVANCED` (`gpt-6.1-sol`). Check them against your account with `GET /v1/model?verify=1`.
 - `ORBIT_TIMEZONE`
 - `ORBIT_CALENDAR_NAME`
 
@@ -33,7 +36,7 @@ Free-plan limits this design relies on:
 - 5 cron triggers per account; Orbit uses 1
 - D1: 5M rows read/day, 100k rows written/day, 500 MB per database
 
-Since 2026-09-01, D1 rejects queries once a daily limit is hit until the 00:00 UTC reset. See STATUS.md for the expected load.
+Since 2026-09-01, D1 rejects queries once a daily limit is hit until the 00:00 UTC reset.
 
 ## 2. Model: Sign in with ChatGPT (official dynamic registration)
 
@@ -47,7 +50,7 @@ In the Mac or iPhone app, go to **Settings → AI model → Continue with ChatGP
 
 Plan usage is shared with your other apps under ChatGPT's five-hour limit; see ChatGPT Settings → Usage. When the limit is hit, Orbit says so. There is no paid API fallback. Signing out revokes the session but keeps the client registration, so the next sign-in is quick.
 
-OpenAI's docs describe this flow for open-source and self-hosted apps. Whether a Worker on your own Cloudflare account counts as self-hosted is not confirmed; see STATUS.md.
+OpenAI's docs describe this flow for open-source and self-hosted apps. Whether a Worker on your own Cloudflare account counts as self-hosted is not confirmed by OpenAI.
 
 **Local development:** run `wrangler dev --ip 0.0.0.0` and point the apps at `http://<Mac>.local:8787`. Plain HTTP is accepted only for local and private-network hosts.
 
@@ -81,9 +84,9 @@ All are added in **Settings** in the app. Credentials go to the Worker once and 
   2. In Orbit, enter your full iCloud address and that password. Orbit verifies them with an IMAP login (`imap.mail.me.com:993`).
 - **GitHub:** a fine-grained personal access token with read access to Issues, Pull requests and Contents.
   - GitHub's notifications inbox doesn't accept fine-grained tokens, so Orbit shows open issues and pull requests that involve you or request your review instead.
-  - Fine-grained tokens only see the repositories you select when creating them. To let Orbit read a private repo such as `ppratick/Orbit`, add it to the token.
+  - Fine-grained tokens only see the repositories you select when creating them. To let Orbit read a private repo such as `you/your-repo`, add it to the token.
   - Add write access only if you want approved comments and merges to work.
-- **Canvas:** in Canvas, go to Account → Settings → New Access Token. Enter your school's base URL, for example `https://canvas.cmu.edu`.
+- **Canvas:** in Canvas, go to Account → Settings → New Access Token. Enter your school's base URL, for example `https://canvas.example.edu`.
 - **Browser Run (optional):** a Cloudflare API token with Browser Rendering/Run permission, set as `CF_BROWSER_TOKEN` and `CF_ACCOUNT_ID`.
   - Free tier: about 10 browser minutes/day.
   - Used only when the model asks to render a JavaScript-heavy page; plain fetch is the default.
@@ -96,7 +99,7 @@ cd apple && xcodegen && open Orbit.xcodeproj
 ```
 
 1. In Xcode, go to Settings → Accounts and add your Apple ID. This creates a free **Personal Team**.
-2. In `project.yml`, set `ORBIT_BUNDLE_PREFIX` to something unique, such as `com.ppratick.orbit` (the iPhone test build used `com.ppratick.orbit.ios`), then run `xcodegen` again.
+2. In `project.yml`, set `ORBIT_BUNDLE_PREFIX` to something unique, such as `com.yourname.orbit` (or pass `ORBIT_BUNDLE_PREFIX=com.yourname.orbit` to `xcodebuild`), then run `xcodegen` again.
 3. Select your Personal Team under *Signing & Capabilities* for both targets.
 4. **Mac:** run the `Orbit-macOS` scheme. It stays in the menu bar as the companion.
 5. **iPhone:**
@@ -109,12 +112,12 @@ cd apple && xcodegen && open Orbit.xcodeproj
 
 Free Personal Team limits (Apple's membership comparison page):
 - iPhone provisioning profiles expire **7 days** after issue, so re-run from Xcode weekly.
-- At most 3 apps per device. Finance Coach was removed from your iPhone to make room for Orbit.
+- At most 3 apps per device.
 - **No Push Notifications capability.**
 - Background modes are available, so opportunistic background refresh is used.
 - Whether the development-signed Mac app also stops launching after 7 days is not verified.
 
-## 6. Notifications while the iPhone app is closed (undecided — your call)
+## 6. Notifications while the iPhone app is closed (optional)
 
 Already in place:
 - Every notification is stored in D1 and syncs to both apps.
@@ -126,7 +129,7 @@ Options for alerts while the iPhone app is closed:
 | Option | Cost | Content privacy | Status |
 |---|---|---|---|
 | **ntfy.sh** with a long random topic. Install the ntfy iOS app, then set `NTFY_TOPIC_URL`. | Free | Orbit sends only a generic line ("An action is waiting for your approval"). The topic URL acts as the password. | Implemented, untested |
-| **Email to yourself** from your Gmail. iOS Mail push alerts you. | Free | Stays in your mailbox | Not implemented. Would need a policy exception for "send to self only". |
+| **Email to yourself** from your own mailbox. iOS Mail push alerts you. | Free | Stays in your mailbox | Not implemented. Would need a policy exception for "send to self only". |
 | **iMessage to yourself** through the Mac (Messages via AppleScript) | Free | Apple end-to-end | Not implemented. Only works while the Mac is awake. |
-| **APNs** (code present in `notify.ts`) | $99/yr Apple Developer Program | Direct | Blocked: you declined the membership. It may also need an HTTP/2 workaround on Workers. |
+| **APNs** (code present in `notify.ts`) | $99/yr Apple Developer Program | Direct | Requires the paid membership. It may also need an HTTP/2 workaround on Workers. |
 | Pushover | One-time app purchase | Third party | Not implemented |

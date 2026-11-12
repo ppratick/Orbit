@@ -16,7 +16,7 @@ import { fromB64, now, parseJson } from "../util";
  * uses the access token for Responses API calls. Tokens never enter model context or API responses.
  *
  * Whether OpenAI treats a user's own Cloudflare Worker as a permitted self-hosted host (vs. a
- * "remotely hosted app" needing their interest form) is NOT verified — see docs/STATUS.md.
+ * "remotely hosted app" needing their interest form) is NOT verified — see docs/SETUP.md.
  */
 export const RESOURCE = "https://api.openai.com/v1";
 export const PLAN_SCOPE = "chatgpt.tokens.use.direct";
