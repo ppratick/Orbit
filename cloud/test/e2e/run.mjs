@@ -145,6 +145,10 @@ try {
     const roles = r.body.messages.map((m) => m.role);
     assert.deepEqual(roles, ["tool_call", "tool_result", "assistant"]);
     assert.match(r.body.messages[2].content, /Saved memory mem_/);
+    const stored = (await api(`/v1/conversations/${conv}/messages`, { token: mac })).body.messages.at(-1);
+    assert.deepEqual(stored.meta.usage.breakdown, { answer: 1, tool_followup: 1 }, "tool round counted; tool execution is not a call");
+    assert.equal(stored.meta.usage.calls, 2);
+    assert.ok(stored.meta.usage.finished_at >= stored.created_at - 1000, "finish time recorded");
     const mems = (await api("/v1/memories", { token: mac })).body.memories;
     assert.equal(mems.length, 1);
     assert.equal(mems[0].source, "conversation");
@@ -179,6 +183,10 @@ try {
     assert.equal(result.status, 201, JSON.stringify(result.body));
     assert.match(result.body.messages.at(-1).content, /Corrected/);
     assert.ok(!result.body.messages.some((m) => m.role === "tool_call"), "obsolete proposal was never executed");
+    const usage = result.body.messages.at(-1).meta.usage;
+    assert.deepEqual(usage.breakdown, { discarded: 1, steering: 1, answer: 1 }, JSON.stringify(usage));
+    assert.equal(usage.calls, 3);
+    assert.ok(usage.models.some((m) => m.model === "gpt-6-luna"));
     assert.equal((await api("/v1/memories")).body.memories.length, before);
     const rows = (await api(`/v1/conversations/${id}/messages`)).body.messages;
     assert.equal(rows.filter((m) => m.role === "user").length, 2);
@@ -198,6 +206,8 @@ try {
     assert.equal(replies.length, 2);
     assert.match(replies[0].content, /Hello original/);
     assert.match(replies[1].content, /hello second/);
+    assert.deepEqual(replies[0].meta.usage.breakdown, { answer: 1, steering: 1 }, "classifying the follow-up belongs to the running answer");
+    assert.deepEqual(replies[1].meta.usage.breakdown, { answer: 1 }, "the queued request has its own count");
   });
   await step("cancellation stops future tools without cancelling unrelated queued work", async () => {
     const id = (await api("/v1/conversations", { method: "POST", body: {} })).body.id;

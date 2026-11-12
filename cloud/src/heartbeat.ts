@@ -9,7 +9,7 @@ import { MAIL_PROVIDERS } from "./connectors";
 import { canvasApi } from "./connectors/canvas";
 import { upsertResponsibility, updateResponsibility, listResponsibilities, listMemories } from "./memory";
 import { getProfile, profileForPrompt } from "./profile";
-import { respond } from "./agent/llm";
+import { CallUsage, respond } from "./agent/llm";
 import { llmConfigured } from "./agent/llmauth";
 import { chooseModel } from "./agent/router";
 import { localNow } from "./agent/agent";
@@ -267,7 +267,9 @@ export async function briefingPhase(env: Env, budget: QueryBudget, force = false
     recent_emails: emails.results.map((e) => ({ subject: e.subject, from: e.from_addr, triage: parseJson(e.triage, {}) })).filter((e) => (e.triage as { category?: string }).category !== "ignore"),
     apple_calendar_and_reminders: ctxRows.results.map((c) => ({ kind: c.kind, items: parseJson(c.payload, []) })),
   };
+  const usage = new CallUsage();
   const res = await respond(env, {
+    usage,
     model: chooseModel(env, "briefing"),
     instructions: `Write the user's morning briefing for ${localNow(env)}. Write it as one friendly good-morning text message in plain prose, no Markdown, headings or bullet points, under 120 words. Cover what matters today in this order, skipping anything empty: today's calendar, things due soon, replies the user owes, actions waiting for approval, and tracked deliveries, returns, refunds or renewals. User preferences: ${mems
       .filter((m) => m.kind === "preference")
@@ -280,7 +282,7 @@ export async function briefingPhase(env: Env, budget: QueryBudget, force = false
   await mainConversation(env);
   const conv = { id: MAIN_CONVERSATION_ID };
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO messages (id, conversation_id, role, content, meta, created_at) VALUES (?, ?, 'assistant', ?, ?, ?)").bind(newId("msg"), conv.id, text, JSON.stringify({ kind: "briefing" }), now()),
+    env.DB.prepare("INSERT INTO messages (id, conversation_id, role, content, meta, created_at) VALUES (?, ?, 'assistant', ?, ?, ?)").bind(newId("msg"), conv.id, text, JSON.stringify({ kind: "briefing", model: res.model, usage: usage.toMeta(now()) }), now()),
     env.DB.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").bind(now(), conv.id),
   ]);
   await notify(env, { title: `Briefing for ${date}`, body: truncate(text, 900), category: "briefing", refType: "conversation", refId: conv.id, dedupeKey: force ? null : key });

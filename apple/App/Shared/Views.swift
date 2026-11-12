@@ -862,19 +862,112 @@ struct MessageBubble: View {
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 40) }
-            // Rendered as plain text (never Markdown), with links detected — like a text message.
-            Text(PlainText.attributed(message.content))
-                .textSelection(.enabled)
-                .font(.body)
-                .lineSpacing(5)
-                .foregroundStyle(.white)
-                .tint(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(isUser ? OrbitPalette.userBubble : OrbitPalette.assistantBubble,
-                            in: RoundedRectangle(cornerRadius: 22))
+            VStack(alignment: .leading, spacing: 6) {
+                // Rendered as plain text (never Markdown), with links detected — like a text message.
+                Text(PlainText.attributed(message.content))
+                    .textSelection(.enabled)
+                    .font(.body)
+                    .lineSpacing(5)
+                    .foregroundStyle(.white)
+                    .tint(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(isUser ? OrbitPalette.userBubble : OrbitPalette.assistantBubble,
+                                in: RoundedRectangle(cornerRadius: 22))
+                if let details = AnswerDetails(message: message) {
+                    AnswerDetailsButton(details: details).padding(.leading, 12)
+                }
+            }
             if !isUser { Spacer(minLength: 40) }
         }
+    }
+}
+
+/// A quiet ⓘ under a finished Orbit reply that shows how it was produced.
+struct AnswerDetailsButton: View {
+    let details: AnswerDetails
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing.toggle() } label: {
+            Label("Answer details", systemImage: "info.circle")
+                .font(.system(size: OrbitTheme.isMac ? 11 : 12, weight: .medium))
+                .foregroundStyle(Color.white.opacity(showing ? 0.6 : 0.32))
+                .contentShape(Rectangle())
+                .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Answer details")
+        .popover(isPresented: $showing, arrowEdge: .bottom) {
+            AnswerDetailsCard(details: details)
+                .preferredColorScheme(.dark)
+                #if os(iOS)
+                .presentationCompactAdaptation(.popover)
+                #endif
+        }
+    }
+}
+
+struct AnswerDetailsCard: View {
+    let details: AnswerDetails
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Answer details").font(.system(size: OrbitTheme.isMac ? 13 : 15, weight: .semibold))
+            row("AI model calls") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(details.calls.map { $0 == 0 ? "None" : "\($0)" } ?? "Unavailable")
+                        .foregroundStyle(details.calls == nil ? Color.secondary : Color.primary)
+                        .monospacedDigit()
+                    if !details.breakdown.isEmpty {
+                        Text(details.breakdownText).font(OrbitTheme.footnote).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+            }
+            Divider().opacity(0.4)
+            row("Models") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    if details.models.isEmpty {
+                        Text(details.postedByDevice ? "None" : "Unavailable").foregroundStyle(.secondary)
+                    }
+                    ForEach(details.models, id: \.model) { use in
+                        HStack(spacing: 4) {
+                            Text(AppModel.modelLabel(use.model))
+                            if use.calls > 1 { Text("×\(use.calls)").foregroundStyle(.secondary).monospacedDigit() }
+                        }
+                        Text(use.model).font(OrbitTheme.footnote).foregroundStyle(.tertiary).textSelection(.enabled)
+                    }
+                }
+            }
+            Divider().opacity(0.4)
+            row("Finished") {
+                Text(details.finishedAt.formatted(date: Calendar.current.isDateInToday(details.finishedAt) ? .omitted : .abbreviated,
+                                                  time: .shortened))
+            }
+            if details.postedByDevice {
+                note("Posted by your device when the task finished, without an AI model.")
+            } else if details.calls == nil {
+                note("Call counts weren’t recorded for replies before this feature.")
+            }
+        }
+        .font(.system(size: OrbitTheme.isMac ? 12.5 : 14))
+        .padding(OrbitTheme.isMac ? 14 : 16)
+        .frame(width: OrbitTheme.isMac ? 270 : 290, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func row<V: View>(_ label: String, @ViewBuilder value: () -> V) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            value()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text).font(OrbitTheme.footnote).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
     }
 }
 

@@ -49,6 +49,44 @@ export interface Req {
   json?: boolean;
   /** Called with each visible text delta as it streams. */
   onDelta?: (text: string) => void | Promise<void>;
+  /** Counts this request toward an answer's "Answer details" once the model accepts it. */
+  usage?: CallUsage;
+  purpose?: CallPurpose;
+}
+
+export type CallPurpose = "answer" | "tool_followup" | "steering" | "summary";
+
+/**
+ * AI model calls spent on one answer. A call counts once the model accepts the request (HTTP 200),
+ * whatever happens after — streamed chunks and tool executions are not calls. A response thrown
+ * away because the user corrected the task still counts, recorded as "discarded".
+ */
+export class CallUsage {
+  calls = 0;
+  private models = new Map<string, number>();
+  private purposes = new Map<string, number>();
+
+  record(model: string, purpose: CallPurpose) {
+    this.calls++;
+    this.models.set(model, (this.models.get(model) ?? 0) + 1);
+    this.purposes.set(purpose, (this.purposes.get(purpose) ?? 0) + 1);
+  }
+  /** A response made for `purpose` was thrown away because the user steered the task while it ran. */
+  discard(purpose: CallPurpose) {
+    const n = this.purposes.get(purpose) ?? 0;
+    if (!n) return;
+    if (n === 1) this.purposes.delete(purpose);
+    else this.purposes.set(purpose, n - 1);
+    this.purposes.set("discarded", (this.purposes.get("discarded") ?? 0) + 1);
+  }
+  toMeta(finishedAt: number) {
+    return {
+      calls: this.calls,
+      models: [...this.models].map(([model, calls]) => ({ model, calls })),
+      breakdown: Object.fromEntries(this.purposes),
+      finished_at: finishedAt,
+    };
+  }
 }
 
 /** Errors with the API's machine-readable code preserved (e.g. subscription_sharing_usage_limit_exceeded). */
@@ -175,6 +213,7 @@ async function call(env: Env, auth: LlmAuth, req: Req): Promise<LlmResult> {
     })();
     throw new LlmError(r.status, j.error?.code ?? `http_${r.status}`, `OpenAI ${r.status} (${auth.mode}): ${j.error?.message ?? j.detail ?? text.slice(0, 300)}`, r.headers.get("x-request-id"));
   }
+  req.usage?.record(req.model, req.purpose ?? "answer");
   const res = await readStream(r.body, req.onDelta);
   return { ...res, via: auth.mode, model: req.model };
 }

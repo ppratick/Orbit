@@ -459,7 +459,9 @@ async function postOutcomeToChat(env: Env, task: TaskRow, outcome: { ok: true; r
       newId("msg"),
       task.conversation_id,
       text,
-      JSON.stringify({ kind: "task_result", task_id: task.id, ok: outcome.ok, device_id: task.lease_device_id }),
+      // Posted by the device itself: no AI model call was involved.
+      JSON.stringify({ kind: "task_result", task_id: task.id, ok: outcome.ok, device_id: task.lease_device_id,
+        usage: { calls: 0, models: [], breakdown: {}, finished_at: t } }),
       t,
     ),
     env.DB.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").bind(t, task.conversation_id),

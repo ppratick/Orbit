@@ -2,7 +2,7 @@ import type { Env } from "../env";
 import { QueryBudget } from "../budget";
 import { HttpError } from "../http";
 import { newId, now, parseJson } from "../util";
-import { respond, type InputItem } from "./llm";
+import { respond, type CallUsage, type InputItem } from "./llm";
 
 export interface InboxMessage {
   id: string; role: "user" | "system"; content: string; created_at: number;
@@ -55,7 +55,7 @@ export class ConversationInbox {
   }
 
   /** Classify only new user messages. Independent work waits until the current turn finishes. */
-  async steering(root: InboxMessage, input: InputItem[]): Promise<InboxMessage[]> {
+  async steering(root: InboxMessage, input: InputItem[], usage?: CallUsage): Promise<InboxMessage[]> {
     if (!this.budget.ok(5)) return [];
     const pending = await this.env.DB.prepare(`SELECT m.id, m.role, m.content, m.created_at FROM chat_inbox q JOIN messages m ON m.id = q.message_id
       WHERE q.conversation_id = ? AND q.state = 'pending' AND m.role = 'user' ORDER BY q.created_at, m.rowid LIMIT 20`)
@@ -70,6 +70,8 @@ Select corrections, constraints, cancellations, clarifications, answers, or extr
         input: [{ role: "user", content: JSON.stringify({ response_format: "json", current_request: root.content,
           recent_context: input.filter((x) => "role" in x && x.role === "user").slice(-5), followups: pending.results }) }],
         json: true,
+        usage,
+        purpose: "steering",
       });
       const ids = parseJson<{ steer_ids?: unknown }>(result.text, {}).steer_ids;
       if (Array.isArray(ids)) steer = new Set(ids.filter((id): id is string => typeof id === "string"));

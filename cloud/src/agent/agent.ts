@@ -3,7 +3,7 @@ import { HttpError } from "../http";
 import { listMemories, listResponsibilities } from "../memory";
 import { getProfile, profileForPrompt } from "../profile";
 import { newId, now, parseJson, truncate } from "../util";
-import { friendlyError, respond, type InputItem } from "./llm";
+import { friendlyError, respond, type InputItem, CallUsage } from "./llm";
 import { chooseModel } from "./router";
 import { toPlainText } from "../plaintext";
 import { toolsFor, type ToolCtx } from "./tools";
@@ -263,8 +263,11 @@ async function executeTurn(inbox: ConversationInbox, root: InboxMessage, emit?: 
   let finalText = "";
   let model = "";
   const deviceResult = role === "system";
+  // Counts belong to this request only; queued unrelated requests get their own turn and counter.
+  const usage = new CallUsage();
+  let afterTools = false;
   const absorbFollowups = async () => {
-    const followups = await inbox.steering(root, input);
+    const followups = await inbox.steering(root, input, usage);
     if (!followups.length) return false;
     input.push({ role: "developer", content: "The user sent updates while you were working. Apply these to future work now. Do not repeat completed tools or undo completed actions without approval. If the user cancels, stop further work and say what already finished. Unrelated requests are handled separately." });
     for (const message of followups) {
@@ -279,15 +282,19 @@ async function executeTurn(inbox: ConversationInbox, root: InboxMessage, emit?: 
       if (!inbox.budget.ok(12)) {
         const summary = await respond(env, { model: model || env.OPENAI_MODEL_BASIC,
           instructions: instructions + "\nThis run reached its work limit. Briefly state what finished and what remains; do not claim unexecuted actions happened.", input,
-          onDelta: emit ? (d) => emit("delta", { text: d }) : undefined });
+          onDelta: emit ? (d) => emit("delta", { text: d }) : undefined, usage, purpose: "summary" });
         finalText = summary.text;
         break;
       }
       await absorbFollowups();
       model = chooseModel(env, "chat", { text: userText, step, deviceResult });
       await emit?.("status", { step, model });
-      const res = await respond(env, { model, instructions, input, tools: defs, onDelta: emit ? (d) => emit("delta", { text: d }) : undefined });
+      const purpose = afterTools ? "tool_followup" : "answer";
+      const res = await respond(env, { model, instructions, input, tools: defs, onDelta: emit ? (d) => emit("delta", { text: d }) : undefined,
+        usage, purpose });
       if (await absorbFollowups()) {
+        usage.discard(purpose); // that response was based on outdated instructions
+        afterTools = false;
         if (step === MAX_STEPS - 1) finalText = "I received your update but reached this run’s limit. No further actions were taken.";
         continue;
       }
@@ -322,13 +329,14 @@ async function executeTurn(inbox: ConversationInbox, root: InboxMessage, emit?: 
         push("tool_result", truncate(output, 16000), { call_id: c.call_id, name: c.name });
         input.push({ type: "function_call_output", call_id: c.call_id, output: truncate(output, 16000) });
       }
+      afterTools = true;
       if (step === MAX_STEPS - 1) finalText = "I stopped after several steps without finishing. Tell me how you'd like to continue.";
     }
   } catch (e) {
     finalText = `Sorry — I couldn't get a response: ${friendlyError(e)}`;
   }
   await inbox.renew();
-  push("assistant", toPlainText(finalText), model ? { model } : null);
+  push("assistant", toPlainText(finalText), { ...(model ? { model } : {}), usage: usage.toMeta(now()) });
 
   // A fast device can finish a task this turn queued (and post its result) before the turn ends.
   // Keep the conversation in cause-and-effect order: this turn's messages go before that result.

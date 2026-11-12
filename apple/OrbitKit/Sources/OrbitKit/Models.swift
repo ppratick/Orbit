@@ -198,3 +198,63 @@ public struct TurnResponse: Decodable, Sendable {
     public var messages: [Message]
     public var replayed: Bool
 }
+
+/// "Answer details" for an Orbit reply: how many AI model calls produced it, with which models,
+/// and when it finished. Recorded by the server in the reply's metadata; older replies have none.
+public struct AnswerDetails: Equatable, Sendable {
+    public struct ModelUse: Equatable, Sendable { public var model: String; public var calls: Int }
+    /// nil when the reply predates call counting ("Unavailable").
+    public var calls: Int?
+    public var models: [ModelUse]
+    public var breakdown: [(purpose: String, count: Int)]
+    public var finishedAt: Date
+    /// Posted by a device when a task finished, with no model involved.
+    public var postedByDevice: Bool
+
+    public static func == (a: AnswerDetails, b: AnswerDetails) -> Bool {
+        a.calls == b.calls && a.models == b.models && a.finishedAt == b.finishedAt && a.postedByDevice == b.postedByDevice
+            && a.breakdown.map(\.purpose) == b.breakdown.map(\.purpose) && a.breakdown.map(\.count) == b.breakdown.map(\.count)
+    }
+
+    /// Display order and wording for each kind of call.
+    public static let purposeLabels: [(key: String, one: String, many: String)] = [
+        ("answer", "answer", "answers"),
+        ("toolFollowup", "after tool results", "after tool results"),
+        ("steering", "follow-up check", "follow-up checks"),
+        ("discarded", "discarded after your correction", "discarded after your corrections"),
+        ("summary", "wrap-up summary", "wrap-up summaries"),
+    ]
+
+    public init?(message: Message) {
+        guard message.role == "assistant", !message.id.hasPrefix("local-"), message.id != "streaming" else { return nil }
+        let meta = message.meta
+        postedByDevice = meta?["kind"]?.string == "task_result"
+        if let usage = meta?["usage"], let n = usage["calls"]?.number {
+            calls = Int(n)
+            models = (usage["models"]?.array ?? []).compactMap { m in
+                guard let id = m["model"]?.string else { return nil }
+                return ModelUse(model: id, calls: Int(m["calls"]?.number ?? 0))
+            }
+            breakdown = Self.purposeLabels.compactMap { p in
+                let raw = p.key == "toolFollowup" ? "tool_followup" : p.key
+                guard let c = usage["breakdown"]?[raw]?.number, c > 0 else { return nil }
+                return (p.key, Int(c))
+            }
+            finishedAt = usage["finished_at"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) } ?? message.createdAt.date
+        } else {
+            calls = nil
+            // Older replies still recorded which model wrote them.
+            models = meta?["model"]?.string.map { [ModelUse(model: $0, calls: 0)] } ?? []
+            breakdown = []
+            finishedAt = message.createdAt.date
+        }
+    }
+
+    /// e.g. "1 answer · 1 after tool results · 1 follow-up check".
+    public var breakdownText: String {
+        breakdown.map { item in
+            let label = Self.purposeLabels.first { $0.key == item.purpose }
+            return "\(item.count) \(item.count == 1 ? label?.one ?? item.purpose : label?.many ?? item.purpose)"
+        }.joined(separator: " · ")
+    }
+}

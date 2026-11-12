@@ -8,6 +8,7 @@ import { untrusted, htmlToText } from "../../src/untrusted";
 import { encryptSecret, decryptSecret } from "../../src/crypto";
 import { extractGmailText } from "../../src/connectors/google";
 import { historyToInput } from "../../src/agent/agent";
+import { CallUsage } from "../../src/agent/llm";
 import { assertPublicUrl } from "../../src/connectors/browser";
 import { phaseFor } from "../../src/heartbeat";
 import { alreadyCovered, appendLine, profileForPrompt } from "../../src/profile";
@@ -184,5 +185,21 @@ describe("About you profile", () => {
   it("formats only filled sections for the assistant, in a fixed order", () => {
     const out = profileForPrompt([{ id: "goals", content: "Run a marathon" }, { id: "first_name", content: "Sam" }, { id: "timezone", content: "Eastern" }, { id: "work", content: " " }]);
     expect(out).toBe("First name: Sam\nTime zone: Eastern\nGoals & interests:\n  Run a marathon");
+  });
+});
+
+describe("Answer details call counting", () => {
+  it("counts calls per model and moves a corrected response to discarded", () => {
+    const u = new CallUsage();
+    u.record("luna", "answer");
+    u.record("luna", "steering");
+    u.discard("answer"); // the first answer was outdated by a correction; the steering check still counts
+    u.record("sol", "answer");
+    u.record("sol", "tool_followup");
+    const m = u.toMeta(123);
+    expect(m.calls).toBe(4);
+    expect(m.models).toEqual([{ model: "luna", calls: 2 }, { model: "sol", calls: 2 }]);
+    expect(m.breakdown).toEqual({ steering: 1, discarded: 1, answer: 1, tool_followup: 1 });
+    expect(m.finished_at).toBe(123);
   });
 });

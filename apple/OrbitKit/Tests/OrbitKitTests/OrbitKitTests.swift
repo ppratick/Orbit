@@ -31,6 +31,27 @@ final class OrbitKitTests: XCTestCase {
         XCTAssertEqual(ProfileSection.catalog.map(\.id), ["first_name", "last_name", "nickname", "timezone", "school", "major", "year", "work", "goals", "context"])
     }
 
+    func testAnswerDetailsParsesRecordedCountsAndMarksOlderRepliesUnavailable() throws {
+        let json = """
+        {"cursor":1,"reset":false,"has_more":false,"deleted":{},"changes":{"message":[
+          {"id":"m1","conversation_id":"c","role":"assistant","content":"hi","created_at":1000,
+           "meta":{"model":"gpt-6.1-sol","usage":{"calls":3,"models":[{"model":"gpt-6-luna","calls":1},{"model":"gpt-6.1-sol","calls":2}],
+             "breakdown":{"answer":1,"tool_followup":1,"steering":1},"finished_at":5000}}},
+          {"id":"m2","conversation_id":"c","role":"assistant","content":"old","created_at":2000,"meta":{"model":"gpt-6-luna"}},
+          {"id":"m3","conversation_id":"c","role":"user","content":"q","created_at":900}]}}
+        """
+        let rows = try XCTUnwrap(JSONDecoder.orbit.decode(SyncResponse.self, from: Data(json.utf8)).changes.message)
+        let d = try XCTUnwrap(AnswerDetails(message: rows[0]))
+        XCTAssertEqual(d.calls, 3)
+        XCTAssertEqual(d.models.map(\.calls), [1, 2])
+        XCTAssertEqual(d.breakdownText, "1 answer · 1 after tool results · 1 follow-up check")
+        XCTAssertEqual(d.finishedAt, Date(timeIntervalSince1970: 5))
+        let old = try XCTUnwrap(AnswerDetails(message: rows[1]))
+        XCTAssertNil(old.calls, "older replies show Unavailable")
+        XCTAssertEqual(old.models.first?.model, "gpt-6-luna")
+        XCTAssertNil(AnswerDetails(message: rows[2]), "only Orbit replies have details")
+    }
+
     @MainActor
     func testProfileEditsSurviveOfflineCache() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
