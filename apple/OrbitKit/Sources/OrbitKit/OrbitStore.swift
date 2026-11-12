@@ -10,6 +10,7 @@ public final class OrbitStore: ObservableObject {
     @Published public private(set) var tasks: [String: OrbitTask] = [:]
     @Published public private(set) var approvals: [String: Approval] = [:]
     @Published public private(set) var memories: [String: Memory] = [:]
+    @Published public private(set) var schedules: [String: Schedule] = [:]
     @Published public private(set) var profile: [String: ProfileSection] = [:]
     @Published public private(set) var profileSuggestions: [String: ProfileSuggestion] = [:]
     @Published public private(set) var responsibilities: [String: Responsibility] = [:]
@@ -48,6 +49,14 @@ public final class OrbitStore: ObservableObject {
     public var pendingProfileSuggestions: [ProfileSuggestion] {
         profileSuggestions.values.filter { $0.status == "pending" }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
+    /// Active first (soonest next run), then paused, then finished.
+    public var liveSchedules: [Schedule] {
+        let rank = ["active": 0, "paused": 1, "done": 2]
+        return schedules.values.filter { $0.deletedAt == nil }.sorted {
+            (rank[$0.status] ?? 3, $0.nextRunAt ?? .max, $0.createdAt) < (rank[$1.status] ?? 3, $1.nextRunAt ?? .max, $1.createdAt)
+        }
+    }
+    public func upsert(schedule: Schedule) { schedules[schedule.id] = schedule }
     public var openResponsibilities: [Responsibility] {
         responsibilities.values.filter { $0.status == "active" || $0.status == "waiting" }.sorted { ($0.dueAt ?? .max) < ($1.dueAt ?? .max) }
     }
@@ -112,6 +121,7 @@ public final class OrbitStore: ObservableObject {
             approvals[a.id] = merged
         }
         c.memory?.forEach { memories[$0.id] = $0 }
+        c.schedule?.forEach { schedules[$0.id] = $0 }
         c.profile?.forEach { profile[$0.id] = $0 }
         c.profileSuggestion?.forEach { profileSuggestions[$0.id] = $0 }
         c.responsibility?.forEach { responsibilities[$0.id] = $0 }
@@ -146,7 +156,7 @@ public final class OrbitStore: ObservableObject {
 
     public func clear() {
         conversations = [:]; messages = [:]; tasks = [:]; approvals = [:]; memories = [:]
-        profile = [:]; profileSuggestions = [:]
+        profile = [:]; profileSuggestions = [:]; schedules = [:]
         responsibilities = [:]; notifications = [:]; activity = [:]; accounts = [:]; devices = [:]; cursor = 0
     }
 
@@ -159,13 +169,15 @@ public final class OrbitStore: ObservableObject {
         var activity: [Activity]; var accounts: [Account]; var devices: [DeviceInfo]
         // Optional so caches written by older builds still load.
         var profile: [ProfileSection]?; var profileSuggestions: [ProfileSuggestion]?
+        var schedules: [Schedule]?
     }
 
     public func save() {
         let s = Snapshot(cursor: cursor, conversations: Array(conversations.values), messages: Array(messages.values), tasks: Array(tasks.values),
                          approvals: Array(approvals.values), memories: Array(memories.values), responsibilities: Array(responsibilities.values),
                          notifications: Array(notifications.values), activity: Array(activity.values), accounts: Array(accounts.values), devices: Array(devices.values),
-                         profile: Array(profile.values), profileSuggestions: Array(profileSuggestions.values))
+                         profile: Array(profile.values), profileSuggestions: Array(profileSuggestions.values),
+                         schedules: Array(schedules.values))
         if let data = try? JSONEncoder().encode(s) {
             #if os(iOS)
             try? data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -190,7 +202,8 @@ public final class OrbitStore: ObservableObject {
         devices = Dictionary(s.devices.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         profile = Dictionary((s.profile ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         profileSuggestions = Dictionary((s.profileSuggestions ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        // A cache from before About you existed never saw the profile rows: pull everything once.
-        if s.profile == nil { cursor = 0 }
+        schedules = Dictionary((s.schedules ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // A cache from before these features existed never saw their rows: pull everything once.
+        if s.profile == nil || s.schedules == nil { cursor = 0 }
     }
 }

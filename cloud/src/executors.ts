@@ -3,6 +3,7 @@ import { firstAccount, mailAccount } from "./connectors";
 import { github } from "./connectors/github";
 import { canvasApi } from "./connectors/canvas";
 import { now } from "./util";
+import { deleteSchedule, scheduleForModel, updateSchedule, type ScheduleInput } from "./schedules";
 
 type P = Record<string, unknown>;
 const s = (p: P, k: string) => (typeof p[k] === "string" ? (p[k] as string) : "");
@@ -44,6 +45,13 @@ const EXECUTORS: Record<string, (env: Env, p: P) => Promise<unknown>> = {
     const a = await firstAccount(env, "canvas", s(p, "account_id") || null);
     const type = s(p, "submission_type") === "online_url" ? "online_url" : "online_text_entry";
     return canvasApi.submit(env, a, n(p, "course_id"), n(p, "assignment_id"), { type, body: s(p, "body") || undefined, url: s(p, "url") || undefined });
+  },
+  async "schedule.update"(env, p) {
+    const changes = (p.changes && typeof p.changes === "object" ? p.changes : {}) as ScheduleInput;
+    return scheduleForModel(await updateSchedule(env, s(p, "schedule_id"), changes));
+  },
+  async "schedule.delete"(env, p) {
+    return deleteSchedule(env, s(p, "schedule_id"));
   },
   async "memory.delete"(env, p) {
     const id = s(p, "memory_id");

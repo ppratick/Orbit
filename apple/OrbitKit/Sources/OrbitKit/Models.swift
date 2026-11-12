@@ -120,6 +120,50 @@ public struct ProfileSuggestion: Codable, Identifiable, Hashable, Sendable {
     public var updatedAt: Millis
 }
 
+/// A scheduled task: instructions Orbit carries out at set times, reporting back in the chat.
+public struct Schedule: Codable, Identifiable, Hashable, Sendable {
+    public var id: String
+    public var title: String
+    public var instructions: String
+    public var `repeat`: String          // once | daily | weekdays | weekly | interval
+    public var timeOfDay: String?        // "HH:MM"
+    public var days: String?             // weekly: "1,3" (0 = Sunday)
+    public var intervalHours: Int?
+    public var runAt: Millis?
+    public var timezone: String
+    public var respectQuietHours: Int
+    public var status: String            // active | paused | done
+    public var nextRunAt: Millis?
+    public var lastRunAt: Millis?
+    public var lastFinishedAt: Millis?
+    public var lastStatus: String?       // running | ok | needs_approval | failed | deferred
+    public var lastResult: String?
+    public var runCount: Int
+    public var source: String
+    public var createdAt: Millis
+    public var updatedAt: Millis
+    public var deletedAt: Millis?
+
+    public var dayList: [Int] { (days ?? "").split(separator: ",").compactMap { Int($0) } }
+}
+
+/// Fields sent when creating or editing a schedule.
+public struct ScheduleDraft: Encodable, Sendable {
+    public var title: String
+    public var instructions: String
+    public var `repeat`: String
+    public var timeOfDay: String?
+    public var days: [Int]?
+    public var intervalHours: Int?
+    public var runAt: Millis?
+    public var timezone: String
+    public var respectQuietHours: Bool
+    public init(title: String, instructions: String, repeat: String, timeOfDay: String?, days: [Int]?, intervalHours: Int?, runAt: Millis?, timezone: String, respectQuietHours: Bool) {
+        self.title = title; self.instructions = instructions; self.repeat = `repeat`; self.timeOfDay = timeOfDay; self.days = days
+        self.intervalHours = intervalHours; self.runAt = runAt; self.timezone = timezone; self.respectQuietHours = respectQuietHours
+    }
+}
+
 public struct Responsibility: Codable, Identifiable, Hashable, Sendable {
     public var id: String
     public var title: String
@@ -178,6 +222,7 @@ public struct SyncResponse: Decodable, Sendable {
         public var task: [OrbitTask]?
         public var approval: [Approval]?
         public var memory: [Memory]?
+        public var schedule: [Schedule]?
         public var profile: [ProfileSection]?
         public var profileSuggestion: [ProfileSuggestion]?
         public var responsibility: [Responsibility]?

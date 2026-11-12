@@ -6,6 +6,8 @@ import { respond, type CallUsage, type InputItem } from "./llm";
 
 export interface InboxMessage {
   id: string; role: "user" | "system"; content: string; created_at: number;
+  /** JSON; scheduled runs carry {kind:"schedule", schedule_id, title}. */
+  meta?: string | null;
 }
 const LEASE_MS = 15 * 60_000;
 
@@ -34,7 +36,7 @@ export class ConversationInbox {
     await this.env.DB.prepare("DELETE FROM chat_leases WHERE conversation_id = ? AND owner_id = ?").bind(this.conversationId, this.owner).run();
   }
   async next(): Promise<InboxMessage | null> {
-    return this.env.DB.prepare(`SELECT m.id, m.role, m.content, m.created_at FROM chat_inbox q JOIN messages m ON m.id = q.message_id
+    return this.env.DB.prepare(`SELECT m.id, m.role, m.content, m.meta, m.created_at FROM chat_inbox q JOIN messages m ON m.id = q.message_id
       WHERE q.conversation_id = ? AND q.state IN ('pending','queued') ORDER BY q.created_at, m.rowid LIMIT 1`)
       .bind(this.conversationId).first<InboxMessage>();
   }

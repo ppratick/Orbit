@@ -33,11 +33,12 @@ struct RootView: View {
 }
 
 enum OrbitSection: String, CaseIterable, Identifiable {
-    case chat = "Orbit", memory = "Memory", settings = "Settings"
+    case chat = "Orbit", scheduled = "Scheduled", memory = "Memory", settings = "Settings"
     var id: Self { self }
     var icon: String {
         switch self {
         case .chat: return "bubble.left"
+        case .scheduled: return "calendar.badge.clock"
         case .memory: return "brain.head.profile"
         case .settings: return "gearshape"
         }
@@ -45,6 +46,7 @@ enum OrbitSection: String, CaseIterable, Identifiable {
     var selectedIcon: String {
         switch self {
         case .chat: return "bubble.left.fill"
+        case .scheduled: return "calendar.badge.clock"
         case .memory: return "brain.head.profile.fill"
         case .settings: return "gearshape.fill"
         }
@@ -238,6 +240,7 @@ struct OrbitHomeView: View {
     @ViewBuilder private var sectionContent: some View {
         switch section {
         case .chat: PersistentChatView(composerFocused: $composerFocused)
+        case .scheduled: ScheduledView(onCompose: compose)
         case .memory: MemoryView(onTrack: { compose("Help me keep track of ") }, onAboutYou: {
             settingsNavigation.path = [.aboutYou]
             section = .settings
@@ -879,6 +882,13 @@ struct MessageBubble: View {
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 40) }
+            VStack(alignment: .leading, spacing: 5) {
+            if let title = message.meta?["schedule"]?["title"]?.string {
+                Label("Scheduled · \(title)", systemImage: "calendar.badge.clock")
+                    .font(.system(size: OrbitTheme.isMac ? 11 : 12, weight: .medium))
+                    .foregroundStyle(ScheduledView.tint.opacity(0.9))
+                    .padding(.leading, 12)
+            }
             // Rendered as plain text (never Markdown), with links detected — like a text message.
             Text(PlainText.attributed(message.content))
                 #if os(macOS)
@@ -914,6 +924,7 @@ struct MessageBubble: View {
                             #endif
                     }
                 }
+            }
             if !isUser { Spacer(minLength: 40) }
         }
     }

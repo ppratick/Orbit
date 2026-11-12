@@ -12,6 +12,7 @@ import { readWebPage } from "../connectors/browser";
 import { untrusted } from "../untrusted";
 import { parseJson, truncate } from "../util";
 import { localTime } from "../localtime";
+import { createSchedule, getSchedule, listSchedules, scheduleForModel, type ScheduleInput } from "../schedules";
 
 export interface ToolCtx {
   env: Env;
@@ -173,6 +174,60 @@ const TOOLS: Tool[] = [
     properties: { include_closed: B("Include done/cancelled items") },
     run: async (t, a) =>
       out((await listResponsibilities(t.env, !!a.include_closed)).map((r) => ({ id: r.id, title: r.title, kind: r.kind, status: r.status, due_at: r.due_at && new Date(r.due_at).toISOString(), next_check_at: r.next_check_at && new Date(r.next_check_at).toISOString(), notes: truncate(r.notes, 400) }))),
+  },
+  // ── Scheduled tasks ─────────────────────────────────────────────────────
+  {
+    name: "create_scheduled_task",
+    description:
+      "Schedule instructions for Orbit to carry out later or repeatedly (e.g. a weekday morning summary). Each run happens in this chat; actions in a run still follow approval rules. Only when the user asks for something recurring or at a later time.",
+    properties: {
+      title: S("Short name, e.g. \"Morning inbox check\"."),
+      instructions: S("What to do on each run, written as the user's request."),
+      repeat: { type: "string", enum: ["once", "daily", "weekdays", "weekly", "interval"] },
+      time_of_day: S("HH:MM (24-hour) in the schedule's time zone, for daily/weekdays/weekly."),
+      days: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Weekly only: 0 = Sunday … 6 = Saturday." },
+      interval_hours: N("Interval only: every N hours (1–168)."),
+      run_at: S("Once only: ISO-8601 date-time with UTC offset."),
+      timezone: S("IANA time zone; defaults to the user's."),
+      respect_quiet_hours: B("Defer runs that fall in the user's quiet hours (default true)."),
+    },
+    required: ["title", "instructions", "repeat"],
+    run: async (t, a) => {
+      const created = await createSchedule(t.env, a as ScheduleInput, "conversation");
+      return `Scheduled. ${out(scheduleForModel(created))} The user can pause, edit or delete it under Scheduled in the sidebar.`;
+    },
+  },
+  {
+    name: "list_scheduled_tasks",
+    description: "List the user's scheduled tasks with their next run and last result.",
+    properties: {},
+    run: async (t) => out((await listSchedules(t.env)).map(scheduleForModel)),
+  },
+  {
+    name: "update_scheduled_task",
+    description: "Change, pause or resume an existing scheduled task. Requires the user's approval.",
+    properties: {
+      schedule_id: S("Scheduled task id from list_scheduled_tasks."),
+      changes: {
+        type: "object",
+        description: "Only the fields to change: title, instructions, repeat, time_of_day, days, interval_hours, run_at, timezone, respect_quiet_hours, or status (\"paused\" / \"active\").",
+      },
+    },
+    required: ["schedule_id", "changes"],
+    run: async (t, a) => {
+      const cur = await getSchedule(t.env, str(a, "schedule_id"));
+      return act(t, "schedule.update", { schedule_id: cur.id, title: cur.title, changes: a.changes });
+    },
+  },
+  {
+    name: "delete_scheduled_task",
+    description: "Delete a scheduled task. Requires the user's approval.",
+    properties: { schedule_id: S("Scheduled task id from list_scheduled_tasks.") },
+    required: ["schedule_id"],
+    run: async (t, a) => {
+      const cur = await getSchedule(t.env, str(a, "schedule_id"));
+      return act(t, "schedule.delete", { schedule_id: cur.id, title: cur.title });
+    },
   },
   {
     name: "track_responsibility",

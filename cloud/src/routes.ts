@@ -16,6 +16,8 @@ import { github } from "./connectors/github";
 import { canvasApi } from "./connectors/canvas";
 import { untrusted } from "./untrusted";
 import { acceptSuggestion, dismissSuggestion, getProfile, SECTION_MAX, setSection } from "./profile";
+import { createSchedule, deleteSchedule, listSchedules, replanAll, runScheduleNow, updateSchedule, type ScheduleInput } from "./schedules";
+import { resumeConversations } from "./agent/agent";
 import { newId, now, parseJson, truncate } from "./util";
 
 export interface Ctx {
@@ -179,7 +181,9 @@ router.on("PUT", "/v1/profile/:section", async (r, p, c) => {
   const b = await readJson<{ content?: string; base_updated_at?: number }>(r);
   const content = str(b.content, "content", { optional: true, max: SECTION_MAX });
   const base = typeof b.base_updated_at === "number" ? b.base_updated_at : undefined;
-  return json(await setSection(c.env, p.section, content, deviceId(c), base));
+  const saved = await setSection(c.env, p.section, content, deviceId(c), base);
+  if (p.section === "quiet_hours") await replanAll(c.env);
+  return json(saved);
 });
 router.on("POST", "/v1/profile/suggestions/:id/accept", async (r, p, c) => {
   const b = await readJson<{ content?: string; section?: string }>(r).catch(() => ({}) as { content?: string; section?: string });
@@ -189,6 +193,17 @@ router.on("POST", "/v1/profile/suggestions/:id/accept", async (r, p, c) => {
   }));
 });
 router.on("POST", "/v1/profile/suggestions/:id/dismiss", async (_r, p, c) => json(await dismissSuggestion(c.env, p.id)));
+
+// ── Scheduled tasks ──────────────────────────────────────────────────────────
+router.on("GET", "/v1/schedules", async (_r, _p, c) => json({ schedules: await listSchedules(c.env) }));
+router.on("POST", "/v1/schedules", async (r, _p, c) => json(await createSchedule(c.env, await readJson<ScheduleInput>(r), "user"), 201));
+router.on("PATCH", "/v1/schedules/:id", async (r, p, c) => json(await updateSchedule(c.env, p.id, await readJson<ScheduleInput>(r))));
+router.on("DELETE", "/v1/schedules/:id", async (_r, p, c) => json(await deleteSchedule(c.env, p.id)));
+router.on("POST", "/v1/schedules/:id/run", async (_r, p, c) => {
+  const s = await runScheduleNow(c.env, p.id);
+  c.exec.waitUntil(resumeConversations(c.env).catch((e) => console.error("schedule run", String(e))));
+  return json(s);
+});
 
 // ── Responsibilities ─────────────────────────────────────────────────────────
 router.on("GET", "/v1/responsibilities", async (r, _p, c) => json({ responsibilities: await listResponsibilities(c.env, new URL(r.url).searchParams.get("all") === "1") }));

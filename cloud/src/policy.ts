@@ -54,6 +54,21 @@ export const ACTIONS: Record<string, ActionSpec> = {
     retrySafe: false,
     summarize: (p) => `Send draft ${s(p.draft_id)} (${s(p.subject) || "no subject"})`,
   },
+  // ── Scheduled tasks ─────────────────────────────────────────────────────
+  // Creating one at the user's request is allowed (each run's actions are gated on their own);
+  // the assistant changing or removing an existing one needs approval.
+  "schedule.update": {
+    target: "cloud",
+    approval: always("Changing a scheduled task"),
+    retrySafe: true,
+    summarize: (p) => `Change scheduled task "${s(p.title) || s(p.schedule_id)}": ${describeChanges(p.changes)}`,
+  },
+  "schedule.delete": {
+    target: "cloud",
+    approval: always("Deleting a scheduled task"),
+    retrySafe: true,
+    summarize: (p) => `Delete scheduled task "${s(p.title) || s(p.schedule_id)}"`,
+  },
   // ── Apple Calendar / Reminders (EventKit on a Mac or iPhone) ────────────
   "calendar.create_event": {
     target: "apple",

@@ -125,6 +125,9 @@ function respond(j) {
   if (/^Actually just say/i.test(msg)) return [text("Corrected without saving anything else.")];
   if (/^Stop/i.test(msg)) return [text("Stopped. No further actions taken.")];
   const tools = new Set((j.tools ?? []).flatMap((t) => (t.tools ?? []).map((x) => x.name)));
+  if (/^Scheduled task “/.test(msg)) return [text(`Scheduled run done: ${msg.match(/Instructions from the user: (.*)$/s)?.[1] ?? ""}`)];
+  if (/^Every weekday at 7:45 check my inbox/i.test(msg)) return [call("create_scheduled_task", { title: "Inbox check", instructions: "Check my inbox and tell me what needs a reply.", repeat: "weekdays", time_of_day: "07:45" })];
+  if (/^Pause (sch_[\w-]+)/.test(msg)) return [call("update_scheduled_task", { schedule_id: msg.match(/sch_[\w-]+/)[0], changes: { status: "paused" } })];
   if (/^I study at CMU/i.test(msg)) return [call("suggest_profile_update", { section: "school", content: "Studies computer science at CMU" })];
   if (/remember/i.test(msg)) return [call("remember", { kind: "preference", content: "Prefers short replies" })];
   if (/work calendar/i.test(msg)) return [call("add_calendar_event", { title: "Team sync", start: "2026-11-12T15:00:00-05:00", calendar: "Work" })];

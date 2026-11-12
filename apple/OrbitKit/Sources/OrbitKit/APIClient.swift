@@ -169,6 +169,14 @@ public final class APIClient: @unchecked Sendable {
     public func acceptSuggestion(id: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("POST", "v1/profile/suggestions/\(id)/accept", body: [String: String](), as: R.self) }
     public func dismissSuggestion(id: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("POST", "v1/profile/suggestions/\(id)/dismiss", as: R.self) }
 
+    // MARK: Scheduled tasks
+
+    public func createSchedule(_ draft: ScheduleDraft) async throws -> Schedule { try await send("POST", "v1/schedules", body: draft) }
+    public func updateSchedule(id: String, _ draft: ScheduleDraft) async throws -> Schedule { try await send("PATCH", "v1/schedules/\(id)", body: draft) }
+    public func setScheduleStatus(id: String, status: String) async throws -> Schedule { try await send("PATCH", "v1/schedules/\(id)", body: ["status": status]) }
+    public func deleteSchedule(id: String) async throws { struct R: Decodable { var deleted: String }; _ = try await send("DELETE", "v1/schedules/\(id)", as: R.self) }
+    public func runSchedule(id: String) async throws -> Schedule { try await send("POST", "v1/schedules/\(id)/run") }
+
     public func setResponsibilityStatus(id: String, status: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("PATCH", "v1/responsibilities/\(id)", body: ["status": status], as: R.self) }
     public func markRead(notificationId: String) async throws { struct R: Decodable { var ok: Bool }; _ = try await send("POST", "v1/notifications/\(notificationId)/read", as: R.self) }
     public func exportMarkdown() async throws -> Data { try await send("GET", "v1/export.md", as: Data.self) }

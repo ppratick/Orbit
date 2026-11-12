@@ -27,7 +27,7 @@ export const isSection = (v: unknown): v is SectionId => typeof v === "string" &
 export const SECTION_MAX = 4000;
 
 /** The assistant's avatar settings, stored beside the profile so they sync the same way. */
-export const ASSISTANT_KEYS = ["assistant_name", "assistant_color"] as const;
+export const ASSISTANT_KEYS = ["assistant_name", "assistant_color", "quiet_hours"] as const;
 export const ASSISTANT_COLORS = ["blue", "purple", "pink", "orange", "green", "teal"];
 export const DEFAULT_ASSISTANT_NAME = "Pat";
 const MAX_PENDING = 25;
@@ -91,6 +91,9 @@ export async function setSection(env: Env, id: string, content: string, deviceId
     if (!text) text = DEFAULT_ASSISTANT_NAME;
   }
   if (id === "assistant_color" && !ASSISTANT_COLORS.includes(text)) throw new HttpError(400, "Unknown color", "validation");
+  if (id === "quiet_hours" && text && !/^([01]?\d|2[0-3]):[0-5]\d-([01]?\d|2[0-3]):[0-5]\d$/.test(text)) {
+    throw new HttpError(400, "Quiet hours must look like 22:00-07:00", "validation");
+  }
   const t = now();
   const r = await env.DB.prepare(
     `UPDATE profile_sections SET content = ?, updated_at = ?, updated_by = ? WHERE id = ? ${baseUpdatedAt != null ? "AND updated_at <= ?" : ""}`,

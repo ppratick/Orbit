@@ -9,6 +9,7 @@ import { encryptSecret, decryptSecret } from "../../src/crypto";
 import { extractGmailText } from "../../src/connectors/google";
 import { historyToInput } from "../../src/agent/agent";
 import { CallUsage } from "../../src/agent/llm";
+import { computeNextRun, describeRule, inQuiet, nextOccurrence, parseQuiet, partsIn, quietEnd, zonedToUtc } from "../../src/schedules";
 import { assertPublicUrl } from "../../src/connectors/browser";
 import { phaseFor } from "../../src/heartbeat";
 import { alreadyCovered, appendLine, profileForPrompt } from "../../src/profile";
@@ -201,5 +202,47 @@ describe("Answer details call counting", () => {
     expect(m.models).toEqual([{ model: "luna", calls: 2 }, { model: "sol", calls: 2 }]);
     expect(m.breakdown).toEqual({ steering: 1, discarded: 1, answer: 1, tool_followup: 1 });
     expect(m.finished_at).toBe(123);
+  });
+});
+
+describe("Scheduled tasks timing", () => {
+  const NY = "America/New_York";
+  it("converts wall-clock times across daylight saving", () => {
+    expect(new Date(zonedToUtc(NY, 2026, 11, 12, 8, 0)).toISOString()).toBe("2026-11-12T13:00:00.000Z"); // EST
+    expect(new Date(zonedToUtc(NY, 2026, 7, 1, 8, 0)).toISOString()).toBe("2026-07-01T12:00:00.000Z"); // EDT
+    // 2:30 AM doesn't exist on spring-forward day; it lands just after the jump.
+    const skipped = partsIn(NY, zonedToUtc(NY, 2026, 3, 8, 2, 30));
+    expect(skipped.h).toBe(3);
+  });
+  const base = { time_of_day: "08:00", days: null, interval_hours: null, run_at: null, timezone: NY, respect_quiet_hours: 1 };
+  it("finds the next weekday, daily and weekly occurrence in the schedule's zone", () => {
+    const fri9am = zonedToUtc(NY, 2026, 11, 13, 9, 0); // Friday after 8 AM
+    expect(partsIn(NY, nextOccurrence({ ...base, repeat: "weekdays" }, fri9am)!)).toMatchObject({ d: 16, h: 8, wd: 1 }); // Monday
+    expect(partsIn(NY, nextOccurrence({ ...base, repeat: "daily" }, fri9am)!)).toMatchObject({ d: 14, h: 8 });
+    expect(partsIn(NY, nextOccurrence({ ...base, repeat: "weekly", days: "0,3" }, fri9am)!)).toMatchObject({ d: 15, wd: 0 });
+    const tokyo = nextOccurrence({ ...base, repeat: "daily", timezone: "Asia/Tokyo" }, fri9am)!;
+    expect(partsIn("Asia/Tokyo", tokyo)).toMatchObject({ h: 8, mi: 0 });
+  });
+  it("steps intervals from the previous run and one-time tasks only fire once", () => {
+    const t = Date.UTC(2026, 10, 12, 12, 0);
+    expect(nextOccurrence({ ...base, repeat: "interval", interval_hours: 3 }, t, t - 3600_000)).toBe(t + 2 * 3600_000);
+    expect(nextOccurrence({ ...base, repeat: "once", run_at: t + 60_000 }, t)).toBe(t + 60_000);
+    expect(nextOccurrence({ ...base, repeat: "once", run_at: t + 60_000 }, t + 60_000)).toBeNull();
+  });
+  it("defers runs in quiet hours (including windows past midnight) to when they end", () => {
+    const q = parseQuiet("22:00-07:00")!;
+    expect(inQuiet(q, NY, zonedToUtc(NY, 2026, 11, 12, 23, 30))).toBe(true);
+    expect(inQuiet(q, NY, zonedToUtc(NY, 2026, 11, 12, 6, 59))).toBe(true);
+    expect(inQuiet(q, NY, zonedToUtc(NY, 2026, 11, 12, 7, 0))).toBe(false);
+    expect(partsIn(NY, quietEnd(q, NY, zonedToUtc(NY, 2026, 11, 12, 23, 30)))).toMatchObject({ d: 13, h: 7, mi: 0 });
+    const at6 = { ...base, repeat: "daily" as const, time_of_day: "06:00" };
+    const next = computeNextRun(at6, "22:00-07:00", zonedToUtc(NY, 2026, 11, 12, 9, 0));
+    expect(partsIn(NY, next!)).toMatchObject({ d: 13, h: 7 });
+    expect(partsIn(NY, computeNextRun({ ...at6, respect_quiet_hours: 0 }, "22:00-07:00", zonedToUtc(NY, 2026, 11, 12, 9, 0))!)).toMatchObject({ h: 6 });
+  });
+  it("describes rules in plain words", () => {
+    expect(describeRule({ ...base, repeat: "weekdays" })).toMatch(/^Every weekday at 8:00 AM \(Eastern (Standard|Daylight) Time\)$/);
+    expect(describeRule({ ...base, repeat: "weekly", days: "1,4" })).toMatch(/^Every Mon, Thu at 8:00 AM/);
+    expect(describeRule({ ...base, repeat: "interval", interval_hours: 1 })).toBe("Every 1 hour");
   });
 });

@@ -8,6 +8,7 @@ const TABLES: Record<string, { table: string; map?: (r: Record<string, unknown>)
   task: { table: "tasks", map: ({ lease_token: _l, params_hash: _h, ...r }) => ({ ...r, params: parseJson(r.params as string, {}), result: parseJson(r.result as string, r.result) }) },
   approval: { table: "approvals", map: ({ params_hash: _h, ...r }) => r },
   memory: { table: "memories" },
+  schedule: { table: "schedules" },
   profile: { table: "profile_sections" },
   profile_suggestion: { table: "profile_suggestions", map: ({ norm: _n, ...r }) => r },
   responsibility: { table: "responsibilities", map: (r) => ({ ...r, data: parseJson(r.data as string, {}) }) },

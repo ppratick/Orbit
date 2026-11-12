@@ -52,6 +52,19 @@ final class OrbitKitTests: XCTestCase {
         XCTAssertNil(AnswerDetails(message: rows[2]), "only Orbit replies have details")
     }
 
+    func testDecodesScheduleFromSync() throws {
+        let json = """
+        {"cursor":2,"reset":false,"has_more":false,"deleted":{},"changes":{"schedule":[{"id":"sch_1","title":"Inbox check","instructions":"Check mail",
+          "repeat":"weekly","time_of_day":"07:45","days":"1,3","interval_hours":null,"run_at":null,"timezone":"America/New_York","respect_quiet_hours":1,
+          "status":"active","next_run_at":5000,"last_run_at":null,"last_finished_at":null,"last_status":null,"last_result":null,"last_message_id":null,
+          "run_count":0,"source":"conversation","created_at":1,"updated_at":1,"deleted_at":null}]}}
+        """
+        let s = try XCTUnwrap(JSONDecoder.orbit.decode(SyncResponse.self, from: Data(json.utf8)).changes.schedule?.first)
+        XCTAssertEqual(s.repeat, "weekly")
+        XCTAssertEqual(s.dayList, [1, 3])
+        XCTAssertEqual(s.timeOfDay, "07:45")
+    }
+
     @MainActor
     func testProfileEditsSurviveOfflineCache() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

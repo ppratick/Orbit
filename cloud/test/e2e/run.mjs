@@ -303,7 +303,7 @@ try {
     assert.equal((await api("/v1/profile/assistant_color", { method: "PUT", token: mac, body: { content: "neon" } })).status, 400);
     assert.ok(instr.includes("First name: Sam") && instr.includes("Studies computer science at CMU"), "profile is assistant context");
     const s = (await api("/v1/sync?since=0", { token: mac })).body;
-    assert.equal(s.changes.profile.length, 18, "10 fields, 6 retired rows, and the avatar name and color");
+    assert.equal(s.changes.profile.length, 19, "10 fields, 6 retired rows, the avatar name and color, and quiet hours");
     assert.ok(s.changes.profile_suggestion.length >= 1 && !JSON.stringify(s.changes.profile_suggestion).includes('"norm"'));
   });
   let calTask;
@@ -470,6 +470,51 @@ try {
     assert.equal(u.searchParams.get("access_type"), "offline");
     const bad = await fetch(`${BASE}/oauth/google/callback?state=forged&code=x`);
     assert.equal(bad.status, 400);
+  });
+  await step("scheduled tasks: create in chat, approval to change, quiet hours, runs deliver in chat", async () => {
+    const r = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: "Every weekday at 7:45 check my inbox", client_msg_id: "sched-1" } });
+    assert.match(r.body.messages[1].content, /^Scheduled\./);
+    let list = (await api("/v1/schedules", { token: mac })).body.schedules;
+    const inbox = list.find((x) => x.title === "Inbox check");
+    assert.equal(inbox.repeat, "weekdays");
+    assert.equal(inbox.source, "conversation");
+    assert.ok(inbox.next_run_at > Date.now());
+    // The assistant changing an existing schedule waits for approval; nothing changes yet.
+    const pause = await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: `Pause ${inbox.id}`, client_msg_id: "sched-2" } });
+    assert.match(pause.body.messages[1].content, /NOT DONE YET/);
+    assert.equal((await api("/v1/schedules")).body.schedules.find((x) => x.id === inbox.id).status, "active");
+    // The user can pause and resume directly.
+    assert.equal((await api(`/v1/schedules/${inbox.id}`, { method: "PATCH", token: mac, body: { status: "paused" } })).body.next_run_at, null);
+    assert.ok((await api(`/v1/schedules/${inbox.id}`, { method: "PATCH", token: mac, body: { status: "active" } })).body.next_run_at > Date.now());
+    // Quiet hours defer a run to when they end, in the schedule's time zone.
+    assert.equal((await api("/v1/profile/quiet_hours", { method: "PUT", token: mac, body: { content: "bad" } })).status, 400);
+    await api("/v1/profile/quiet_hours", { method: "PUT", token: mac, body: { content: "00:00-23:59" } });
+    const deferred = (await api(`/v1/schedules`)).body.schedules.find((x) => x.id === inbox.id);
+    const local = new Intl.DateTimeFormat("en-US", { timeZone: inbox.timezone, hour: "numeric", minute: "numeric", hourCycle: "h23" }).format(deferred.next_run_at);
+    assert.equal(local, "23:59");
+    await api("/v1/profile/quiet_hours", { method: "PUT", token: mac, body: { content: "" } });
+    // A one-time run fires from the minute cron and its result lands in the chat.
+    const once = await api("/v1/schedules", { method: "POST", token: mac, body: { title: "Water plants", instructions: "Say water the plants.", repeat: "once", run_at: Date.now() + 1500 } });
+    assert.equal(once.status, 201, JSON.stringify(once.body));
+    await new Promise((res) => setTimeout(res, 2000));
+    await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`);
+    let reply;
+    for (let i = 0; i < 60 && !reply; i++) {
+      await new Promise((res) => setTimeout(res, 250));
+      const msgs = (await api("/v1/conversations/conv_orbit_primary/messages", { token: mac })).body.messages ?? [];
+      reply = msgs.find((m) => m.role === "assistant" && m.meta?.schedule?.id === once.body.id);
+    }
+    assert.ok(reply, "scheduled reply delivered in the chat");
+    assert.match(reply.content, /water the plants/);
+    const done = (await api("/v1/schedules")).body.schedules.find((x) => x.id === once.body.id);
+    assert.equal(done.status, "done");
+    assert.equal(done.last_status, "ok");
+    assert.match(done.last_result, /water the plants/);
+    // Firing the cron again doesn't run it twice.
+    await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`);
+    assert.equal((await api("/v1/schedules")).body.schedules.find((x) => x.id === once.body.id).run_count, 1);
+    assert.equal((await api(`/v1/schedules/${once.body.id}`, { method: "DELETE", token: mac })).status, 200);
+    assert.ok(!(await api("/v1/schedules")).body.schedules.some((x) => x.id === once.body.id));
   });
   await step("Markdown export includes memory, responsibilities and conversations", async () => {
     const md = (await api("/v1/export.md")).body;
