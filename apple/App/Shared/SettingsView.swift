@@ -166,7 +166,7 @@ struct SettingsView: View {
         let pending = store.pendingProfileSuggestions.count
         let filled = ProfileSection.catalog.filter { !store.profileText($0.id).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
         let subtitle = pending > 0 ? "\(pending) suggestion\(pending == 1 ? "" : "s") to review"
-            : filled == 0 ? "Help Orbit get to know you" : "\(filled) of \(ProfileSection.catalog.count) sections filled in"
+            : filled == 0 ? "Help Orbit get to know you" : (store.profileText("name").isEmpty ? "\(filled) of \(ProfileSection.catalog.count) filled in" : "\(store.profileText("name")) · \(filled) of \(ProfileSection.catalog.count) filled in")
         return Button { navigation.push(.aboutYou) } label: {
             OrbitRow(symbol: "person.crop.circle.fill", tint: AboutYouContent.tint, title: SettingsDestination.aboutYou.rawValue,
                      subtitle: subtitle, accessory: .chevron) {

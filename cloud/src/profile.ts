@@ -7,13 +7,16 @@ import { newId, now } from "./util";
  * assistant learns in conversation become suggestions that change nothing until accepted.
  */
 export const PROFILE_SECTIONS = [
-  { id: "basics", title: "Basics", question: "Your name, what Orbit should call you, and your time zone." },
-  { id: "work", title: "School & work", question: "Where do you study or work, and what are you focused on?" },
-  { id: "people", title: "Important people", question: "Who comes up often — family, friends, teammates, professors?" },
-  { id: "routines", title: "Routines", question: "When do you usually wake up, work, exercise or wind down?" },
-  { id: "goals", title: "Goals & interests", question: "What are you working toward, and what do you enjoy?" },
-  { id: "context", title: "Anything else", question: "Anything else Orbit should keep in mind." },
+  { id: "name", title: "Name", question: "What Orbit should call you.", kind: "line" },
+  { id: "timezone", title: "Time zone", question: "Where you usually are, e.g. Eastern Time.", kind: "line" },
+  { id: "school", title: "School", question: "Where you study and what.", kind: "line" },
+  { id: "work", title: "Work", question: "Your job or role, if you have one.", kind: "line" },
+  { id: "people", title: "Important people", question: "Who comes up often — family, friends, teammates, professors?", kind: "text" },
+  { id: "routines", title: "Routines", question: "When do you usually wake up, work, exercise or wind down?", kind: "text" },
+  { id: "goals", title: "Goals & interests", question: "What are you working toward, and what do you enjoy?", kind: "text" },
+  { id: "context", title: "Anything else", question: "Anything else Orbit should keep in mind.", kind: "text" },
 ] as const;
+const isLine = (id: string) => PROFILE_SECTIONS.some((s) => s.id === id && s.kind === "line");
 export type SectionId = (typeof PROFILE_SECTIONS)[number]["id"];
 const SECTION_IDS = PROFILE_SECTIONS.map((s) => s.id) as readonly string[];
 export const isSection = (v: unknown): v is SectionId => typeof v === "string" && SECTION_IDS.includes(v);
@@ -131,7 +134,8 @@ export async function acceptSuggestion(env: Env, id: string, deviceId: string | 
   const section: SectionId = opts.section && isSection(opts.section) ? opts.section : s.section;
   const fact = (opts.content ?? s.content).trim();
   const cur = await env.DB.prepare("SELECT content FROM profile_sections WHERE id = ?").bind(section).first<{ content: string }>();
-  const next = appendLine(cur?.content ?? "", fact);
+  // Short fields (name, school…) hold one value: accepting replaces it. Longer ones gain a line.
+  const next = isLine(section) ? fact : appendLine(cur?.content ?? "", fact);
   if (next.length > SECTION_MAX) throw new HttpError(400, "That section is full. Edit it to make room first.", "validation");
   const t = now();
   const stmts = [env.DB.prepare("UPDATE profile_suggestions SET status = 'accepted', section = ?, content = ?, updated_at = ? WHERE id = ? AND status = 'pending'").bind(section, fact, t, id)];
@@ -155,7 +159,9 @@ export async function dismissSuggestion(env: Env, id: string) {
 export function profileForPrompt(sections: { id: string; content: string }[]): string {
   return PROFILE_SECTIONS.map((s) => {
     const text = sections.find((x) => x.id === s.id)?.content.trim();
-    return text ? `${s.title}:\n${text.split("\n").map((l) => `  ${l}`).join("\n")}` : "";
+    if (!text) return "";
+    if (s.kind === "line" && !text.includes("\n")) return `${s.title}: ${text}`;
+    return `${s.title}:\n${text.split("\n").map((l) => `  ${l}`).join("\n")}`;
   })
     .filter(Boolean)
     .join("\n");

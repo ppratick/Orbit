@@ -88,14 +88,16 @@ public struct ProfileSection: Codable, Identifiable, Hashable, Sendable {
         self.id = id; self.content = content; self.updatedAt = updatedAt; self.updatedBy = updatedBy
     }
 
-    /// The fixed set of sections, in display order, with the short question each one answers.
-    public static let catalog: [(id: String, title: String, question: String, symbol: String)] = [
-        ("basics", "Basics", "Your name, what Orbit should call you, and your time zone.", "person.fill"),
-        ("work", "School & work", "Where do you study or work, and what are you focused on?", "graduationcap.fill"),
-        ("people", "Important people", "Who comes up often — family, friends, teammates, professors?", "person.2.fill"),
-        ("routines", "Routines", "When do you usually wake up, work, exercise or wind down?", "clock.fill"),
-        ("goals", "Goals & interests", "What are you working toward, and what do you enjoy?", "star.fill"),
-        ("context", "Anything else", "Anything else Orbit should keep in mind.", "text.alignleft"),
+    /// The fixed set of fields, in display order. Short fields hold one value; the rest are notes.
+    public static let catalog: [(id: String, title: String, question: String, symbol: String, multiline: Bool)] = [
+        ("name", "Name", "What should Orbit call you?", "person.fill", false),
+        ("timezone", "Time zone", "e.g. Eastern Time", "globe.americas.fill", false),
+        ("school", "School", "e.g. CMU, Computer Science", "graduationcap.fill", false),
+        ("work", "Work", "Job or role, if any", "briefcase.fill", false),
+        ("people", "Important people", "Family, friends, teammates, professors", "person.2.fill", true),
+        ("routines", "Routines", "When you wake up, work, exercise, wind down", "clock.fill", true),
+        ("goals", "Goals & interests", "What you’re working toward, what you enjoy", "star.fill", true),
+        ("context", "Anything else", "Anything else Orbit should keep in mind", "text.alignleft", true),
     ]
     public static func title(for id: String) -> String { catalog.first { $0.id == id }?.title ?? id.capitalized }
 }

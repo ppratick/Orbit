@@ -125,7 +125,7 @@ function respond(j) {
   if (/^Actually just say/i.test(msg)) return [text("Corrected without saving anything else.")];
   if (/^Stop/i.test(msg)) return [text("Stopped. No further actions taken.")];
   const tools = new Set((j.tools ?? []).flatMap((t) => (t.tools ?? []).map((x) => x.name)));
-  if (/^I study at CMU/i.test(msg)) return [call("suggest_profile_update", { section: "work", content: "Studies computer science at CMU" })];
+  if (/^I study at CMU/i.test(msg)) return [call("suggest_profile_update", { section: "school", content: "Studies computer science at CMU" })];
   if (/remember/i.test(msg)) return [call("remember", { kind: "preference", content: "Prefers short replies" })];
   if (/work calendar/i.test(msg)) return [call("add_calendar_event", { title: "Team sync", start: "2026-11-12T15:00:00-05:00", calendar: "Work" })];
   if (/dentist/i.test(msg)) return [call("add_calendar_event", { title: "Dentist", start: "2026-11-13T09:00:00-05:00" })];

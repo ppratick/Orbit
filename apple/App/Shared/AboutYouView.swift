@@ -1,16 +1,14 @@
 import OrbitKit
 import SwiftUI
 
-/// Settings → About you. Optional sections the user writes in their own words, plus facts Orbit
-/// noticed in conversation waiting for review. The profile changes only when the user edits it
-/// or accepts a suggestion.
+/// Settings → About you. One page of fields the user fills in directly; every field saves as you
+/// type and syncs to the other devices. Facts Orbit noticed in conversation wait at the top for
+/// review and change nothing until accepted.
 struct AboutYouContent: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: OrbitStore
-    @State private var editing: EditingSection?
     @State private var resolving: Set<String> = []
 
-    struct EditingSection: Identifiable { let id: String }
     static let tint = Color(red: 0.58, green: 0.42, blue: 0.98)
 
     var body: some View {
@@ -27,47 +25,29 @@ struct AboutYouContent: View {
                 }
                 .transition(.opacity)
             }
-            OrbitGroup(header: "Your profile",
-                       footer: "Synced to your devices. What you write here takes priority over anything Orbit infers.") {
-                ForEach(Array(ProfileSection.catalog.enumerated()), id: \.element.id) { index, section in
-                    if index > 0 { OrbitRowDivider() }
-                    sectionRow(section)
+            OrbitGroup(header: "Basics") {
+                ProfileField(id: "name")
+                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
+                ProfileField(id: "timezone", fill: Self.currentTimeZone)
+            }
+            OrbitGroup(header: "School & work") {
+                ProfileField(id: "school")
+                OrbitRowDivider(inset: OrbitTheme.rowHorizontal)
+                ProfileField(id: "work")
+            }
+            ForEach(ProfileSection.catalog.filter(\.multiline), id: \.id) { field in
+                OrbitGroup(header: field.title, footer: field.id == "context"
+                           ? "Saves as you type and syncs to your devices. What you write here takes priority over anything Orbit infers." : nil) {
+                    ProfileField(id: field.id)
                 }
             }
         }
         .animation(.easeOut(duration: 0.2), value: store.pendingProfileSuggestions.map(\.id))
-        .sheet(item: $editing) { target in
-            ProfileSectionEditor(sectionId: target.id, initialText: store.profileText(target.id)) { editing = nil }
-        }
     }
 
-    private func sectionRow(_ section: (id: String, title: String, question: String, symbol: String)) -> some View {
-        let text = store.profileText(section.id).trimmingCharacters(in: .whitespacesAndNewlines)
-        return Button { editing = EditingSection(id: section.id) } label: {
-            HStack(alignment: text.isEmpty ? .center : .top, spacing: 12) {
-                OrbitIconTile(symbol: section.symbol, tint: text.isEmpty ? Color(white: 0.3) : Self.tint)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(section.title).font(OrbitTheme.rowTitle)
-                    Text(text.isEmpty ? section.question : text.replacingOccurrences(of: "\n", with: " · "))
-                        .font(OrbitTheme.rowSubtitle)
-                        .foregroundStyle(text.isEmpty ? .tertiary : .secondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: text.isEmpty ? "plus" : "chevron.right")
-                    .font(.system(size: OrbitTheme.isMac ? 11 : 13, weight: .semibold)).foregroundStyle(.tertiary)
-                    .frame(maxHeight: .infinity)
-            }
-            .padding(.horizontal, OrbitTheme.rowHorizontal)
-            .padding(.vertical, OrbitTheme.rowVertical)
-            .frame(minHeight: OrbitTheme.rowMinHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(OrbitRowButtonStyle())
-        .accessibilityLabel(section.title)
-        .accessibilityValue(text.isEmpty ? "Empty" : text)
-        .accessibilityHint(text.isEmpty ? "Add details" : "Edit")
+    /// e.g. "Eastern Time".
+    static var currentTimeZone: String {
+        TimeZone.current.localizedName(for: .generic, locale: .current) ?? TimeZone.current.identifier
     }
 
     private func suggestionRow(_ suggestion: ProfileSuggestion) -> some View {
@@ -107,94 +87,99 @@ struct AboutYouContent: View {
     }
 }
 
-/// Sheet for writing one About you section.
-struct ProfileSectionEditor: View {
+/// One About you field, edited in place. Short fields sit beside their label; notes get a
+/// multi-line box. Saves a moment after typing stops, on Return, and when focus leaves.
+struct ProfileField: View {
     @EnvironmentObject var model: AppModel
-    let sectionId: String
-    let initialText: String
-    var close: () -> Void
+    @EnvironmentObject var store: OrbitStore
+    let id: String
+    /// A suggested value offered as a one-tap button while the field is empty (time zone).
+    var fill: String? = nil
     @State private var text = ""
-    @State private var saving = false
+    @State private var pending: Task<Void, Never>?
     @State private var error: String?
     @FocusState private var focused: Bool
 
-    private var info: (id: String, title: String, question: String, symbol: String) {
-        ProfileSection.catalog.first { $0.id == sectionId } ?? (sectionId, sectionId.capitalized, "", "person.fill")
+    private var info: (id: String, title: String, question: String, symbol: String, multiline: Bool) {
+        ProfileSection.catalog.first { $0.id == id } ?? (id, id.capitalized, "", "person.fill", false)
     }
-    private var unchanged: Bool {
-        text.trimmingCharacters(in: .whitespacesAndNewlines) == initialText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    private var stored: String { store.profileText(id) }
+    private var changed: Bool { trimmed(text) != trimmed(stored) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: OrbitTheme.isMac ? 16 : 20) {
-            HStack {
-                Button("Cancel", action: close).buttonStyle(.plain).foregroundStyle(.secondary)
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Text(info.title).font(.system(size: OrbitTheme.isMac ? 14 : 17, weight: .semibold))
-                Spacer()
-                Button(action: save) {
-                    if saving { ProgressView().controlSize(.small) } else { Text("Save").fontWeight(.semibold) }
+        VStack(alignment: .leading, spacing: 6) {
+            if info.multiline {
+                TextField(info.question, text: $text, axis: .vertical)
+                    .lineLimit(2...8)
+                    .textFieldStyle(.plain).font(OrbitTheme.body)
+                    .focused($focused)
+            } else {
+                HStack(spacing: 12) {
+                    Text(info.title).font(OrbitTheme.rowTitle)
+                        .frame(width: OrbitTheme.isMac ? 82 : 96, alignment: .leading)
+                    TextField(info.question, text: $text)
+                        .textFieldStyle(.plain).font(OrbitTheme.body)
+                        .focused($focused)
+                        .onSubmit(saveNow)
+                        #if os(iOS)
+                        .textInputAutocapitalization(id == "name" ? .words : .sentences)
+                        #endif
+                    if let fill, trimmed(text).isEmpty {
+                        Button("Use current") {
+                            text = fill
+                            saveNow()
+                        }
+                        .buttonStyle(.plain).font(OrbitTheme.rowSubtitle.weight(.semibold))
+                        .foregroundStyle(AboutYouContent.tint)
+                        .fixedSize()
+                        .help(fill)
+                        .accessibilityLabel("Use current time zone, \(fill)")
+                    }
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(unchanged ? Color.secondary : Color.white)
-                .disabled(unchanged || saving)
-                .keyboardShortcut(.defaultAction)
             }
-            .font(OrbitTheme.body)
-
-            HStack(alignment: .top, spacing: 12) {
-                OrbitIconTile(symbol: info.symbol, tint: AboutYouContent.tint)
-                Text(info.question).font(OrbitTheme.body).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            TextField(placeholder, text: $text, axis: .vertical)
-                .lineLimit(5...14).textFieldStyle(.plain).font(OrbitTheme.body).focused($focused)
-                .padding(14)
-                .background(OrbitTheme.raised, in: RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 10 : 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: OrbitTheme.isMac ? 10 : 16, style: .continuous)
-                    .stroke(focused ? Color.white.opacity(0.2) : OrbitTheme.hairline, lineWidth: focused ? 1 : 0.5))
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(OrbitTheme.footnote).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Short notes are fine — one idea per line works best. Leave it empty to skip this section.")
-                .font(OrbitTheme.footnote).foregroundStyle(.secondary)
-            Spacer(minLength: 0)
         }
-        .padding(OrbitTheme.isMac ? 20 : 22)
-        .frame(minWidth: 340, idealWidth: 460, minHeight: OrbitTheme.isMac ? 340 : nil)
-        .background(Color(white: 0.06).ignoresSafeArea())
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(!unchanged)
-        .preferredColorScheme(.dark)
-        .onAppear {
-            text = initialText
-            focused = true
+        .padding(.horizontal, OrbitTheme.rowHorizontal)
+        .padding(.vertical, OrbitTheme.isMac ? 10 : 13)
+        .frame(minHeight: OrbitTheme.rowMinHeight)
+        .contentShape(Rectangle())
+        .onTapGesture { focused = true }
+        .accessibilityElement(children: .contain)
+        .onAppear { text = stored }
+        // Another device changed it: show the new value unless the user is mid-edit here.
+        .onChange(of: stored) { _, new in if !focused, pending == nil { text = new } }
+        .onChange(of: text) { _, _ in scheduleSave() }
+        .onChange(of: focused) { _, isFocused in if !isFocused { saveNow() } }
+        .onDisappear { if changed { saveNow() } }
+    }
+
+    private func trimmed(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func scheduleSave() {
+        pending?.cancel()
+        guard changed else { pending = nil; return }
+        pending = Task {
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard !Task.isCancelled else { return }
+            await save()
         }
     }
 
-    private var placeholder: String {
-        switch sectionId {
-        case "basics": return "e.g. I’m Sam. Eastern time."
-        case "work": return "e.g. Junior studying CS at CMU"
-        case "people": return "e.g. Maya — my sister, lives in Chicago"
-        case "routines": return "e.g. Gym before class on weekdays"
-        case "goals": return "e.g. Land a summer internship"
-        default: return "Anything else worth knowing"
-        }
+    private func saveNow() {
+        pending?.cancel()
+        guard changed else { pending = nil; return }
+        pending = Task { await save() }
     }
 
-    private func save() {
-        saving = true
-        error = nil
-        Task {
-            error = await model.saveProfile(section: sectionId, content: text)
-            saving = false
-            if error == nil { close() }
-        }
+    private func save() async {
+        let value = text
+        let failure = await model.saveProfile(section: id, content: value)
+        guard !Task.isCancelled else { return } // a newer save superseded this one
+        error = failure
+        pending = nil
     }
 }
