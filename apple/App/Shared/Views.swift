@@ -62,15 +62,17 @@ struct OrbitHomeView: View {
     @FocusState private var composerFocused: Bool
     @State private var restoreComposerFocus = false
     @State private var showActivity = false
+    @State private var customizingPat = false
+    @GestureState private var backSwipe: CGFloat = 0
     @GestureState private var swipe: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geometry in
             #if os(iOS)
-            let headerHeight: CGFloat = 68
+            let headerHeight: CGFloat = 110
             #else
-            let headerHeight: CGFloat = 94
+            let headerHeight: CGFloat = 134
             #endif
             let drawerWidth = min(320, geometry.size.width - 36)
             let reveal = min(max((sidebarOpen ? drawerWidth : 0) + swipe, 0), drawerWidth)
@@ -106,6 +108,9 @@ struct OrbitHomeView: View {
                         VStack(spacing: 0) {
                             header
                             sectionContent.frame(maxWidth: .infinity, maxHeight: .infinity)
+                                // The page follows the finger during a back swipe.
+                                .offset(x: swipeGoesBack ? backSwipe * 0.85 : 0)
+                                .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.86), value: backSwipe)
                         }
                     }
                 }
@@ -169,6 +174,10 @@ struct OrbitHomeView: View {
             ActivitySheet { model.chatJumpRequest += 1 }
                 .environmentObject(model).environmentObject(store)
         }
+        .sheet(isPresented: $customizingPat) {
+            PatCustomizeSheet(initialName: PatHeader.name(store), initialColor: PatHeader.color(store)) { customizingPat = false }
+                .environmentObject(model).environmentObject(store)
+        }
         .onChange(of: swipe) { old, current in
             #if os(iOS)
             if !sidebarOpen, old <= 0, current > 0 { dismissKeyboardForSidebar() }
@@ -194,9 +203,15 @@ struct OrbitHomeView: View {
 
     private var header: some View {
         OrbitGlassGroup {
-            Text(section == .settings ? settingsNavigation.title : section.rawValue)
-                .lineLimit(1).minimumScaleFactor(0.7)
-                .font(.system(size: 24, weight: .semibold, design: .rounded))
+            Group {
+                if section == .chat {
+                    PatHeader { customizingPat = true }
+                } else {
+                    Text(section == .settings ? settingsNavigation.title : section.rawValue)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                }
+            }
                 .frame(maxWidth: .infinity).frame(minHeight: 46)
                 .padding(.horizontal, 58)
                 .overlay(alignment: .leading) {
@@ -363,14 +378,22 @@ struct OrbitHomeView: View {
         .help("Activity")
     }
 
+    /// Inside a Settings sub-page, the left-edge swipe means "back", like a navigation stack.
+    private var swipeGoesBack: Bool { section == .settings && !settingsNavigation.path.isEmpty }
+
     private var openGesture: some Gesture {
         DragGesture(minimumDistance: 14)
             .updating($swipe) { value, state, _ in
-                guard value.translation.width > abs(value.translation.height) else { return }
+                guard !swipeGoesBack, value.translation.width > abs(value.translation.height) else { return }
+                state = max(value.translation.width, 0)
+            }
+            .updating($backSwipe) { value, state, _ in
+                guard swipeGoesBack, value.translation.width > abs(value.translation.height) else { return }
                 state = max(value.translation.width, 0)
             }
             .onEnded { value in
-                if value.translation.width > 65 && value.translation.width > abs(value.translation.height) { setSidebar(true) }
+                guard value.translation.width > 65 && value.translation.width > abs(value.translation.height) else { return }
+                if swipeGoesBack { settingsNavigation.back() } else { setSidebar(true) }
             }
     }
 
@@ -527,7 +550,9 @@ struct ChatView: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 20) {
+                    // A plain stack: a lazy one misestimates its height when the chat reappears and
+                    // can leave the bottom-anchored view blank. History is bounded, so this stays cheap.
+                    VStack(alignment: .leading, spacing: 20) {
                         if store.chat(conversationId).isEmpty, !model.sending.contains(conversationId) {
                             OrbitChatWelcome { prompt in
                                 model.chatDraft = prompt
@@ -858,53 +883,59 @@ private extension View {
 
 struct MessageBubble: View {
     let message: Message
+    @State private var showingDetails = false
     var isUser: Bool { message.role == "user" }
+    private var details: AnswerDetails? { AnswerDetails(message: message) }
+
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 6) {
-                // Rendered as plain text (never Markdown), with links detected — like a text message.
-                Text(PlainText.attributed(message.content))
-                    .textSelection(.enabled)
-                    .font(.body)
-                    .lineSpacing(5)
-                    .foregroundStyle(.white)
-                    .tint(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(isUser ? OrbitPalette.userBubble : OrbitPalette.assistantBubble,
-                                in: RoundedRectangle(cornerRadius: 22))
-                if let details = AnswerDetails(message: message) {
-                    AnswerDetailsButton(details: details).padding(.leading, 12)
+            // Rendered as plain text (never Markdown), with links detected — like a text message.
+            Text(PlainText.attributed(message.content))
+                #if os(macOS)
+                .textSelection(.enabled)
+                #endif
+                .font(.body)
+                .lineSpacing(5)
+                .foregroundStyle(.white)
+                .tint(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(isUser ? OrbitPalette.userBubble : OrbitPalette.assistantBubble,
+                            in: RoundedRectangle(cornerRadius: 22))
+                #if os(iOS)
+                .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 22))
+                #endif
+                // Hold (or right-click on Mac) for actions; answer details live here, out of the way.
+                .contextMenu {
+                    Button { copy() } label: { Label("Copy", systemImage: "doc.on.doc") }
+                    if details != nil {
+                        Button {
+                            // Let the menu finish closing before the card appears.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingDetails = true }
+                        } label: { Label("Answer details", systemImage: "info.circle") }
+                    }
                 }
-            }
+                .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
+                    if let details {
+                        AnswerDetailsCard(details: details)
+                            .preferredColorScheme(.dark)
+                            #if os(iOS)
+                            .presentationCompactAdaptation(.popover)
+                            #endif
+                    }
+                }
             if !isUser { Spacer(minLength: 40) }
         }
     }
-}
 
-/// A quiet ⓘ under a finished Orbit reply that shows how it was produced.
-struct AnswerDetailsButton: View {
-    let details: AnswerDetails
-    @State private var showing = false
-
-    var body: some View {
-        Button { showing.toggle() } label: {
-            Label("Answer details", systemImage: "info.circle")
-                .font(.system(size: OrbitTheme.isMac ? 11 : 12, weight: .medium))
-                .foregroundStyle(Color.white.opacity(showing ? 0.6 : 0.32))
-                .contentShape(Rectangle())
-                .padding(.vertical, 2)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Answer details")
-        .popover(isPresented: $showing, arrowEdge: .bottom) {
-            AnswerDetailsCard(details: details)
-                .preferredColorScheme(.dark)
-                #if os(iOS)
-                .presentationCompactAdaptation(.popover)
-                #endif
-        }
+    private func copy() {
+        #if os(iOS)
+        UIPasteboard.general.string = message.content
+        #else
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.content, forType: .string)
+        #endif
     }
 }
 
@@ -1127,7 +1158,7 @@ struct ActivitySheet: View {
         #if os(macOS)
         .frame(minWidth: 480, idealWidth: 540, minHeight: 520, idealHeight: 640)
         #endif
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large]) // opens fully expanded
         .presentationDragIndicator(.visible)
         .preferredColorScheme(.dark)
     }

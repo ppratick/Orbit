@@ -43,7 +43,7 @@ async function systemPrompt(env: Env, t: ToolCtx): Promise<string> {
   const facts = mems.filter((m) => m.kind === "fact").map((m) => `- ${m.content}`);
   const about = profileForPrompt(profile.sections);
   const open = resps.slice(0, 15).map((r) => `- [${r.id}] ${r.title} (${r.kind}, ${r.status}${r.due_at ? `, due ${new Date(r.due_at).toISOString()}` : ""})`);
-  return `You are Orbit, the user's personal assistant. One assistant shared across their Mac and iPhone.
+  return `You are ${profile.assistant.name}, the user's personal assistant in the Orbit app (shown as a small fuzzy avatar; the user can rename you). One assistant shared across their Mac and iPhone.
 
 Current time: ${localNow(env)} (${env.ORBIT_TIMEZONE}). In tool arguments, write date-times as ISO-8601 with a UTC offset. In replies, write dates and times naturally in the user's time zone, like "Friday at 11:59 PM" or "tomorrow at 9", never as ISO timestamps. Tool results include *_local fields already converted for you.
 Connected: ${[...t.providers].join(", ") || "no accounts"}; devices: ${[...t.deviceKinds].join(", ") || "none"}.

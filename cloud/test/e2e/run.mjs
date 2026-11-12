@@ -298,9 +298,12 @@ try {
     assert.match(reviewed.body.messages[1].content, /already says this/);
     await api(`/v1/conversations/${conv}/messages`, { method: "POST", token: phone, body: { content: "hello profile", client_msg_id: "p4" } });
     const instr = requests.at(-1).instructions;
+    assert.ok(instr.startsWith("You are Pat,"), "assistant starts out named Pat");
+    assert.equal((await api("/v1/profile/assistant_name", { method: "PUT", token: mac, body: { content: "  Juniper  " } })).body.content, "Juniper");
+    assert.equal((await api("/v1/profile/assistant_color", { method: "PUT", token: mac, body: { content: "neon" } })).status, 400);
     assert.ok(instr.includes("First name: Sam") && instr.includes("Studies computer science at CMU"), "profile is assistant context");
     const s = (await api("/v1/sync?since=0", { token: mac })).body;
-    assert.equal(s.changes.profile.length, 16, "10 fields plus 6 retired rows");
+    assert.equal(s.changes.profile.length, 18, "10 fields, 6 retired rows, and the avatar name and color");
     assert.ok(s.changes.profile_suggestion.length >= 1 && !JSON.stringify(s.changes.profile_suggestion).includes('"norm"'));
   });
   let calTask;

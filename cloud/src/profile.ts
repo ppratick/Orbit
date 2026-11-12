@@ -25,6 +25,11 @@ const SECTION_IDS = PROFILE_SECTIONS.map((s) => s.id) as readonly string[];
 export const isSection = (v: unknown): v is SectionId => typeof v === "string" && SECTION_IDS.includes(v);
 
 export const SECTION_MAX = 4000;
+
+/** The assistant's avatar settings, stored beside the profile so they sync the same way. */
+export const ASSISTANT_KEYS = ["assistant_name", "assistant_color"] as const;
+export const ASSISTANT_COLORS = ["blue", "purple", "pink", "orange", "green", "teal"];
+export const DEFAULT_ASSISTANT_NAME = "Pat";
 const MAX_PENDING = 25;
 
 export interface ProfileSectionRow {
@@ -64,7 +69,9 @@ export async function getProfile(env: Env) {
     env.DB.prepare("SELECT id, section, content, source, source_ref, status, created_at, updated_at FROM profile_suggestions WHERE status = 'pending' ORDER BY created_at"),
   ]);
   const byId = new Map((sections.results as ProfileSectionRow[]).map((s) => [s.id, s]));
+  const assistantName = byId.get("assistant_name" as SectionId)?.content.trim() || DEFAULT_ASSISTANT_NAME;
   return {
+    assistant: { name: assistantName, color: byId.get("assistant_color" as SectionId)?.content || "blue" },
     sections: PROFILE_SECTIONS.map((s) => byId.get(s.id) ?? { id: s.id, content: "", updated_at: 0, updated_by: null }),
     suggestions: suggestions.results as ProfileSuggestionRow[],
   };
@@ -75,9 +82,15 @@ export async function getProfile(env: Env) {
  * Pending suggestions the new text already covers are resolved, so they don't linger.
  */
 export async function setSection(env: Env, id: string, content: string, deviceId: string | null, baseUpdatedAt?: number) {
-  if (!isSection(id)) throw new HttpError(404, "Unknown section", "not_found");
+  const assistantKey = (ASSISTANT_KEYS as readonly string[]).includes(id);
+  if (!isSection(id) && !assistantKey) throw new HttpError(404, "Unknown section", "not_found");
   if (content.length > SECTION_MAX) throw new HttpError(400, "That section is too long", "validation");
-  const text = content.replace(/\r\n/g, "\n").trim();
+  let text = content.replace(/\r\n/g, "\n").trim();
+  if (id === "assistant_name") {
+    text = text.replace(/\s+/g, " ").slice(0, 24);
+    if (!text) text = DEFAULT_ASSISTANT_NAME;
+  }
+  if (id === "assistant_color" && !ASSISTANT_COLORS.includes(text)) throw new HttpError(400, "Unknown color", "validation");
   const t = now();
   const r = await env.DB.prepare(
     `UPDATE profile_sections SET content = ?, updated_at = ?, updated_by = ? WHERE id = ? ${baseUpdatedAt != null ? "AND updated_at <= ?" : ""}`,
