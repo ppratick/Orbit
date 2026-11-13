@@ -5,10 +5,12 @@
 Orbit is one assistant shared across native SwiftUI apps. It reads and sorts your email, keeps track of what you owe people, runs scheduled tasks, and makes changes in Apple Calendar and Reminders on your own devices. Anything consequential, like sending an email or editing an event, waits for your approval. The project is free and open source. Each user runs their own Cloudflare Workers + D1 backend and connects their own accounts and model access. Hosting quotas, model access, and third-party services may have separate costs.
 
 <p align="center">
-  <img src="docs/images/sidebar.png" width="240" alt="Orbit sidebar">
-  <img src="docs/images/scheduled.png" width="240" alt="Scheduled tasks">
-  <img src="docs/images/pat.png" width="240" alt="Customizing the Pat avatar">
+  <img src="docs/images/chat.png" width="190" alt="Orbit chat drafting a reply and adding a reminder">
+  <img src="docs/images/scheduled.png" width="190" alt="Scheduled tasks">
+  <img src="docs/images/pat.png" width="190" alt="Customizing the Pat avatar">
+  <img src="docs/images/sidebar.png" width="190" alt="Orbit sidebar">
 </p>
+<p align="center"><sub>The chat screenshot uses a sample conversation on a local test backend.</sub></p>
 
 ## Features
 
