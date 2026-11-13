@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "db:migrate:local": "wrangler d1 migrations apply orbit --local",
-    "db:migrate:remote": "wrangler d1 migrations apply orbit --remote -c wrangler.local.jsonc",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote -c wrangler.local.jsonc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "node test/e2e/run.mjs",

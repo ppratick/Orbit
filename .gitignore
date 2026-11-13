@@ -19,3 +19,39 @@ xcuserdata/
 .DS_Store
 !.dev.vars.example
 cloud/node_modules.nosync/
+
+# Private configuration and credentials
+.env
+.env.*
+*.env
+*.env.*
+.dev.vars
+.dev.vars.*
+*.local.json
+*.local.jsonc
+credentials*.json
+secrets*.json
+*-secrets.json
+connection.json
+Pairing.plist
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+*.provisionprofile
+# Personal databases and their journal files
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+# Publish examples only; never put working credentials in these files
+!.env.example
+!.env.*.example
+!*.env.example
+!.dev.vars.example

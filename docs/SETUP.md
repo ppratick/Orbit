@@ -1,13 +1,13 @@
 # Setup
 
-Every step here is something only you can do: logins, consoles, credentials.
+Deploy one private backend for yourself, then build and pair your own apps. Use your own accounts and credentials throughout.
 
-Orbit is designed to run entirely on free tiers: Cloudflare Workers Free + D1 for the backend, a ChatGPT plan for the model, and a free Apple Personal Team for the apps.
+Orbit can use Cloudflare Workers Free + D1 and a free Apple Personal Team for development builds. Your ChatGPT plan, provider access, and usage limits are separate; check current provider terms and quotas before deployment.
 
 ## 1. Cloudflare (Workers Free + D1)
 
 ```bash
-cd cloud && npm install
+cd cloud && npm ci
 npx wrangler login
 cp wrangler.jsonc wrangler.local.jsonc  # gitignored; holds your account's IDs
 npx wrangler d1 create orbit          # paste the printed database_id (and your account_id) into wrangler.local.jsonc
@@ -16,7 +16,7 @@ npm run db:migrate:remote
 
 Optionally add `"CONTACT_EMAIL": "you@example.com"` under `vars` in `wrangler.local.jsonc`; it is shown on the public privacy page that Google's consent screen links to.
 
-Set secrets with `npx wrangler secret put NAME`. Each command prompts for the value.
+Set secrets with `npx wrangler secret put NAME -c wrangler.local.jsonc`. Each command prompts for the value.
 
 | Secret | Value |
 |---|---|
@@ -30,17 +30,11 @@ Deploy with `npm run deploy`. Non-secret settings live under `vars` in `wrangler
 - `ORBIT_TIMEZONE`
 - `ORBIT_CALENDAR_NAME`
 
-Free-plan limits this design relies on:
-- 100k requests/day
-- 10 ms CPU and 50 D1 queries per invocation
-- 5 cron triggers per account; Orbit uses 1
-- D1: 5M rows read/day, 100k rows written/day, 500 MB per database
-
-Since 2026-09-01, D1 rejects queries once a daily limit is hit until the 00:00 UTC reset.
+The backend uses two cron schedules (source polling and minute-by-minute schedules). Check the current [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) and [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) for your plan before deployment.
 
 ## 2. Model: Sign in with ChatGPT (official dynamic registration)
 
-No client registration, secret or API key is needed. Orbit uses OpenAI's dynamic client registration for ChatGPT plan usage (developers.openai.com/siwc/token-sharing-open-source).
+No manually registered model client or model API key is needed for this sign-in flow. Orbit uses OpenAI's dynamic client registration for ChatGPT plan usage (developers.openai.com/siwc/token-sharing-open-source).
 
 In the Mac or iPhone app, go to **Settings → AI model → Continue with ChatGPT**:
 1. The app starts a listener on `127.0.0.1:1455`. It sends `client_id=dynamic_agent_client` with `agent_name_hint=Orbit` the first time, or the saved issued `oaiapp_…` ID after that, plus a per-device `ext_agent_host_id`, PKCE and a nonce.
@@ -69,6 +63,7 @@ OpenAI's docs describe this flow for open-source and self-hosted apps. Whether a
    - `openid`
    - `email`
 5. Under **Clients**, create an OAuth client of type **Web application** with redirect URI `https://<worker>/oauth/google/callback`.
+   - If you later rename the Worker, update this redirect URI and any branding links in Google Cloud before reconnecting Google. Existing connections remain dependent on their saved authorization.
    - Branding links: the Worker serves the home page `https://<worker>/about`, the privacy policy `/privacy` and the terms `/terms`.
 6. Set the `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` secrets.
 7. In the app, open **Settings → Connect a Google account**. Repeat for each Gmail account; each becomes its own account row.
@@ -112,7 +107,7 @@ cd apple && xcodegen && open Orbit.xcodeproj
 
 Free Personal Team limits (Apple's membership comparison page):
 - iPhone provisioning profiles expire **7 days** after issue, so re-run from Xcode weekly.
-- At most 3 apps per device.
+- Other device and App ID limits also apply; check Apple’s current membership comparison.
 - **No Push Notifications capability.**
 - Background modes are available, so opportunistic background refresh is used.
 - Whether the development-signed Mac app also stops launching after 7 days is not verified.
@@ -133,3 +128,7 @@ Options for alerts while the iPhone app is closed:
 | **iMessage to yourself** through the Mac (Messages via AppleScript) | Free | Apple end-to-end | Not implemented. Only works while the Mac is awake. |
 | **APNs** (code present in `notify.ts`) | $99/yr Apple Developer Program | Direct | Requires the paid membership. It may also need an HTTP/2 workaround on Workers. |
 | Pushover | One-time app purchase | Third party | Not implemented |
+
+## Keeping your deployment private
+
+The committed Wrangler file is a template. Keep your working `wrangler.local.jsonc`, `.dev.vars`, database exports, pairing details, and generated access tokens ignored. Set a fresh random `ADMIN_TOKEN`; never deploy the example placeholder. Preserve `ENCRYPTION_KEY` when moving an existing database, otherwise saved account credentials cannot be decrypted. Changing a Worker URL also requires updating the app connection settings and Google OAuth redirect URI.

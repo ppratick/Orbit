@@ -2,7 +2,7 @@
 
 **A private AI assistant for iPhone and Mac that works with your email, calendar and reminders, and asks before it acts.**
 
-Orbit is one assistant shared across native SwiftUI apps. It reads and sorts your email, keeps track of what you owe people, runs scheduled tasks, and makes changes in Apple Calendar and Reminders on your own devices. Anything consequential, like sending an email or editing an event, waits for your approval. It runs entirely on free tiers: Cloudflare Workers + D1 for the backend and your existing ChatGPT plan for the model.
+Orbit is one assistant shared across native SwiftUI apps. It reads and sorts your email, keeps track of what you owe people, runs scheduled tasks, and makes changes in Apple Calendar and Reminders on your own devices. Anything consequential, like sending an email or editing an event, waits for your approval. The project is free and open source. Each user runs their own Cloudflare Workers + D1 backend and connects their own accounts and model access. Hosting quotas, model access, and third-party services may have separate costs.
 
 <p align="center">
   <img src="docs/images/sidebar.png" width="240" alt="Orbit sidebar">
@@ -73,13 +73,13 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 cd cloud
-npm install
+npm ci
 npm run typecheck
-npm test            # 66 unit tests: policy, crypto, schedules, SMTP, attachments, MIME, …
-npm run test:e2e    # 49 end-to-end checks against the real Worker in `wrangler dev`
+npm test
+npm run test:e2e
 
 cd ../apple/OrbitKit
-swift test          # 18 Swift tests
+swift test
 ```
 
 ## Repository layout
@@ -109,3 +109,7 @@ npm run dev
 - Uses "Sign in with ChatGPT" plan usage, so it shares your plan's limits and can't use audio input or OpenAI's built-in computer-use tool.
 - Free Apple Personal Team builds expire after 7 days and can't use push notifications.
 - Cloudflare Workers Free limits (CPU time and D1 queries per invocation) shape how background work is batched.
+
+## License
+
+[MIT](LICENSE). Keep account credentials, personal deployment configuration, database exports, and device tokens out of Git and shared archives. No prebuilt downloads are provided yet.
